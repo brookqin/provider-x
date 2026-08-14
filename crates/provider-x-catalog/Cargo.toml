@@ -1,0 +1,28 @@
+[package]
+name = "provider-x-catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+hex.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+provider-x-core = { path = "../provider-x-core" }
+provider-x-network = { path = "../provider-x-network" }
+protocol-openai-responses = { path = "../protocol-openai-responses" }
+protocol-openai-chat-completions = { path = "../protocol-openai-chat-completions" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

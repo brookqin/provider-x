@@ -1,0 +1,139 @@
+_version: 1
+app:
+  language:
+    title: 语言
+    description: 切换设置窗口与菜单栏使用的语言。
+    changed: 已切换为%{language}。
+    save_failed: 保存语言偏好失败：%{error}
+  common:
+    cancel: 取消
+    save: 保存
+    custom: 自定义
+    model_count: "%{count} 个模型"
+  tray:
+    router_running: Router：运行中 · %{address}
+    open_settings: 打开设置
+    quit: 退出
+    codex_enabling: Codex 集成：正在启用…
+    codex_disabling: Codex 集成：正在停用…
+    codex_enabled: Codex 集成：已启用
+    codex_disabled: Codex 集成：未启用
+    disable_codex: 停用 Codex 集成（保持 Router 运行）
+    enable_codex: 启用 Codex 集成…
+  sidebar:
+    providers: 供应商
+    no_providers: 尚未添加供应商
+    add_provider: 新增供应商
+    remove_provider: 删除选中的供应商
+    new_provider: 新供应商
+    unsaved: 未保存
+    global_settings: 全局设置
+  provider:
+    field:
+      template: 供应商
+      name: 名称
+      protocol: 上游协议
+      websocket_url: WebSocket URL（可选）
+      native_websocket: 支持原生 WebSocket
+    placeholder:
+      name: Provider 名称
+    api_key:
+      show: 显示 API Key
+      hide: 隐藏 API Key
+    add_title: 新增供应商
+    settings_title: 供应商设置
+    add_subtitle: 填写连接信息，刷新模型列表后保存。
+    settings_subtitle: 配置 Provider 连接与协议能力。
+    name_required: Provider 名称不能为空
+    api_key_required: 请填写 API Key
+    missing_edited: 正在编辑的 Provider 已不存在
+    disappeared: Provider 已不存在，请重新打开设置。
+    namespace_required: 供应商名称需包含英文字母或数字，才能生成模型命名空间
+    busy:
+      refresh: 正在测试连接并读取模型…
+      save_models: 正在保存 Provider 和模型…
+      save: 正在保存供应商…
+      enable: 正在验证并启用 Provider…
+      disable: 正在停用 Provider 并更新目录…
+      remove: 正在删除 Provider…
+    task_failed:
+      refresh: 模型刷新任务意外退出
+      save_models: 保存任务意外退出
+      save: 保存供应商任务意外退出
+      enabled: 启用状态任务意外退出
+      remove: 删除 Provider 任务意外退出
+    refresh_success: 已刷新 %{total} 个模型；models.dev 为 %{registry} 个模型提供了参数建议。
+    refresh_warning: 已刷新 %{total} 个模型；模型建议服务不可用：%{warning}
+    saved_models: Provider 配置和模型已更新；%{restart_hint}。
+    saved_models_warning: Provider 配置和模型已更新，但运行路由更新失败：%{warning}
+    saved: 供应商已保存；%{restart_hint}。
+    saved_warning: 供应商已保存，但 Codex 配置同步失败：%{warning}
+    state_saved: Provider 状态和运行路由已同步；%{restart_hint}。
+    state_warning: Provider 和运行路由已同步，但 Codex 配置同步失败：%{warning}
+    remove_title: 删除 Provider“%{name}”？
+    remove_description: Provider 配置会被删除并从运行路由中移除。集成已启用时，完整重启 ChatGPT Desktop 后模型选择器才会更新。
+    remove_button: 删除 Provider
+    removed: Provider 已删除；%{restart_hint}。
+    removed_warning: Provider 已删除，但 Codex 配置同步失败：%{warning}
+  model:
+    display_name_placeholder: 模型显示名称
+    context_placeholder: 例如 128000
+    reasoning_placeholder: 例如 low, medium, high
+    search_placeholder: 搜索模型
+    missing: 当前模型列表中已找不到该模型。
+    invalid_context: 上下文长度必须留空或填写大于 0 的整数。
+    updated: 模型 %{model} 的参数已更新。
+    none_configurable: 当前没有可设置的模型，请先刷新模型列表。
+    settings: 模型参数
+    display_name: 显示名称
+    context_window: 上下文长度（可留空）
+    reasoning_levels: 推理等级（逗号分隔，可留空）
+    parallel_tools: 支持并行工具调用
+    search_tool: 支持 Search 工具
+    refresh_first: 请先刷新模型列表，再修改模型开关。
+    settings_tooltip: 设置模型参数
+    list_filtered: 模型列表（%{visible}/%{total}）
+    list_total: 模型列表（%{total}）
+    refresh_tooltip: 刷新模型列表
+    no_match: 没有匹配的模型。
+    empty: 暂无模型，请点击右上角刷新按钮。
+  global:
+    subtitle: 控制 ProviderX 的系统行为与 Codex / ChatGPT Desktop 集成。
+    runtime_group: 运行与集成
+    launch_at_login: 开机自动运行
+    launch_waiting: 等待在系统设置中批准
+    launch_description: 登录 macOS 后在后台启动 ProviderX
+    codex_integration: Codex / ChatGPT Desktop 集成
+    integration_enabled_hint: 已启用 · Provider 变更后需完整重启 ChatGPT Desktop 更新模型选择器
+    integration_disabled_hint: 切换集成后需完整重启 ChatGPT Desktop
+    about: 关于
+    version: 版本
+    description_title: 功能说明
+    description: 支持 OpenAI Responses 与 Chat Completions 协议，并为 Codex / ChatGPT app
+      扩展第三方模型目录。
+    launch_requires_approval: 已提交开机运行请求；请在系统设置的登录项中允许 ProviderX。
+    launch_enabled: ProviderX 将在登录 macOS 后自动运行。
+    launch_disabled: 已关闭开机自动运行。
+    launch_failed: 修改开机运行设置失败：%{error}
+  codex:
+    task_failed: Codex 集成任务意外退出
+    enabled: Codex 集成已启用；请完整重启 ChatGPT Desktop 后使用。
+    restored: Codex 配置已恢复；请保持 ProviderX 运行到现有任务结束，再重启 ChatGPT Desktop。
+    restored_tray: Codex 配置已恢复；Router 会继续运行，现有任务可自然结束。
+    enabling: 正在启用…
+    disabling: 正在停用…
+  internal:
+    control_lock: 控制面状态锁已损坏
+    egress_exit_task: Egress 退出任务意外结束
+    registry_read_task: 模型建议缓存读取任务意外退出
+    registry_write_task: 模型建议缓存写入任务意外退出
+    egress_lock: Egress 状态锁已损坏
+    egress_health_failed: Egress listener 健康检查失败：%{error}
+    codex_validation_restored: Codex 配置验证失败，已恢复：%{error}
+    codex_validation_restore_failed: Codex 配置验证失败且恢复失败：%{error}；%{restore}
+    codex_management_disabled: providers.yaml 已关闭 Codex 用户配置管理
+    egress_task_lock: Egress 任务锁已损坏
+    egress_shutdown_timeout: Egress 优雅退出超过期限，已强制停止
+    codex_validation_launch_failed: 无法运行 Codex 配置验证
+    codex_config_load_failed: Codex 无法加载更新后的配置
+  restart_hint: 完整重启 ChatGPT Desktop 后模型选择器才会更新

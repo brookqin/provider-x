@@ -1,0 +1,25 @@
+[package]
+name = "provider-x-contract-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+provider-x-core = { path = "../provider-x-core" }
+provider-x-egress = { path = "../provider-x-egress" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+zstd.workspace = true
+
+[lints]
+workspace = true

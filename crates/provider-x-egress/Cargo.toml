@@ -1,0 +1,33 @@
+[package]
+name = "provider-x-egress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+arc-swap.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+pin-project-lite.workspace = true
+protocol-openai-responses = { path = "../protocol-openai-responses" }
+protocol-openai-chat-completions = { path = "../protocol-openai-chat-completions" }
+provider-x-catalog = { path = "../provider-x-catalog" }
+provider-x-core = { path = "../provider-x-core" }
+provider-x-network = { path = "../provider-x-network" }
+provider-x-protocol = { path = "../provider-x-protocol" }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

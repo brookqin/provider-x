@@ -1,0 +1,21 @@
+[package]
+name = "provider-x-network"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+hyper.workspace = true
+hyper-http-proxy.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+provider-x-core = { path = "../provider-x-core" }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tower-service.workspace = true
+
+[lints]
+workspace = true

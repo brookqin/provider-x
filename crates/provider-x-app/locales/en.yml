@@ -1,0 +1,153 @@
+_version: 1
+app:
+  language:
+    title: Language
+    description: Change the language used by the settings window and menu bar.
+    changed: Language changed to %{language}.
+    save_failed: 'Could not save the language preference: %{error}'
+  common:
+    cancel: Cancel
+    save: Save
+    custom: Custom
+    model_count: "%{count} models"
+  tray:
+    router_running: 'Router: Running · %{address}'
+    open_settings: Open Settings
+    quit: Quit
+    codex_enabling: 'Codex integration: Enabling…'
+    codex_disabling: 'Codex integration: Disabling…'
+    codex_enabled: 'Codex integration: Enabled'
+    codex_disabled: 'Codex integration: Disabled'
+    disable_codex: Disable Codex Integration (Keep Router Running)
+    enable_codex: Enable Codex Integration…
+  sidebar:
+    providers: Providers
+    no_providers: No providers added
+    add_provider: Add provider
+    remove_provider: Remove selected provider
+    new_provider: New Provider
+    unsaved: Unsaved
+    global_settings: Global Settings
+  provider:
+    field:
+      template: Provider
+      name: Name
+      protocol: Upstream Protocol
+      websocket_url: WebSocket URL (Optional)
+      native_websocket: Supports Native WebSocket
+    placeholder:
+      name: Provider name
+    api_key:
+      show: Show API Key
+      hide: Hide API Key
+    add_title: Add Provider
+    settings_title: Provider Settings
+    add_subtitle: Enter connection details, refresh the model list, then save.
+    settings_subtitle: Configure the provider connection and protocol capabilities.
+    name_required: Provider name is required
+    api_key_required: Enter an API Key
+    missing_edited: The provider being edited no longer exists
+    disappeared: The provider no longer exists. Reopen Settings.
+    namespace_required: The provider name must contain an English letter or number
+      to generate a model namespace
+    busy:
+      refresh: Testing the connection and loading models…
+      save_models: Saving provider and models…
+      save: Saving provider…
+      enable: Validating and enabling provider…
+      disable: Disabling provider and updating catalog…
+      remove: Removing provider…
+    task_failed:
+      refresh: Model refresh task exited unexpectedly
+      save_models: Save task exited unexpectedly
+      save: Provider save task exited unexpectedly
+      enabled: Provider state task exited unexpectedly
+      remove: Provider removal task exited unexpectedly
+    refresh_success: Refreshed %{total} models; models.dev supplied recommendations
+      for %{registry} models.
+    refresh_warning: 'Refreshed %{total} models; model recommendations are unavailable:
+      %{warning}'
+    saved_models: Provider and models updated. %{restart_hint}.
+    saved_models_warning: 'Provider and models updated, but the runtime route could
+      not be updated: %{warning}'
+    saved: Provider saved. %{restart_hint}.
+    saved_warning: 'Provider saved, but Codex configuration sync failed: %{warning}'
+    state_saved: Provider state and runtime route synchronized. %{restart_hint}.
+    state_warning: 'Provider and runtime route synchronized, but Codex configuration
+      sync failed: %{warning}'
+    remove_title: Remove provider “%{name}”?
+    remove_description: The provider will be removed from configuration and runtime
+      routing. When integration is enabled, fully restart ChatGPT Desktop to update
+      the model picker.
+    remove_button: Remove Provider
+    removed: Provider removed. %{restart_hint}.
+    removed_warning: 'Provider removed, but Codex configuration sync failed: %{warning}'
+  model:
+    display_name_placeholder: Model display name
+    context_placeholder: e.g. 128000
+    reasoning_placeholder: e.g. low, medium, high
+    search_placeholder: Search models
+    missing: This model is no longer in the current model list.
+    invalid_context: Context length must be empty or an integer greater than 0.
+    updated: Model %{model} settings updated.
+    none_configurable: No configurable models are available. Refresh the model list
+      first.
+    settings: Model Settings
+    display_name: Display Name
+    context_window: Context Length (Optional)
+    reasoning_levels: Reasoning Levels (Comma-separated, Optional)
+    parallel_tools: Supports Parallel Tool Calls
+    search_tool: Supports Search Tool
+    refresh_first: Refresh the model list before changing model switches.
+    settings_tooltip: Configure model settings
+    list_filtered: Models (%{visible}/%{total})
+    list_total: Models (%{total})
+    refresh_tooltip: Refresh model list
+    no_match: No matching models.
+    empty: No models yet. Click the refresh button in the upper-right corner.
+  global:
+    subtitle: Control ProviderX system behavior and Codex / ChatGPT Desktop integration.
+    runtime_group: Runtime & Integration
+    launch_at_login: Launch at Login
+    launch_waiting: Waiting for approval in System Settings
+    launch_description: Start ProviderX in the background after signing in to macOS
+    codex_integration: Codex / ChatGPT Desktop Integration
+    integration_enabled_hint: Enabled · Fully restart ChatGPT Desktop after provider
+      changes to update the model picker
+    integration_disabled_hint: Fully restart ChatGPT Desktop after changing integration
+    about: About
+    version: Version
+    description_title: Features
+    description: Supports OpenAI Responses and Chat Completions, and extends the third-party
+      model catalog for Codex / ChatGPT.
+    launch_requires_approval: ProviderX was submitted as a login item. Allow it in
+      System Settings.
+    launch_enabled: ProviderX will start automatically after signing in to macOS.
+    launch_disabled: Automatic launch has been disabled.
+    launch_failed: 'Could not change launch-at-login: %{error}'
+  codex:
+    task_failed: Codex integration task exited unexpectedly
+    enabled: Codex integration enabled. Fully restart ChatGPT Desktop before use.
+    restored: Codex configuration restored. Keep ProviderX running until current tasks
+      finish, then restart ChatGPT Desktop.
+    restored_tray: Codex configuration restored. The Router will keep running so current
+      tasks can finish naturally.
+    enabling: Enabling…
+    disabling: Disabling…
+  internal:
+    control_lock: Control-plane state lock is poisoned
+    egress_exit_task: Egress shutdown task exited unexpectedly
+    registry_read_task: Model recommendation cache read task exited unexpectedly
+    registry_write_task: Model recommendation cache write task exited unexpectedly
+    egress_lock: Egress state lock is poisoned
+    egress_health_failed: 'Egress listener health check failed: %{error}'
+    codex_validation_restored: 'Codex configuration validation failed and the previous
+      configuration was restored: %{error}'
+    codex_validation_restore_failed: 'Codex configuration validation failed and restoration
+      also failed: %{error}; %{restore}'
+    codex_management_disabled: providers.yaml disables Codex user configuration management
+    egress_task_lock: Egress task lock is poisoned
+    egress_shutdown_timeout: Egress graceful shutdown timed out and was forcibly stopped
+    codex_validation_launch_failed: Could not run Codex configuration validation
+    codex_config_load_failed: Codex could not load the updated configuration
+  restart_hint: Fully restart ChatGPT Desktop to update the model picker

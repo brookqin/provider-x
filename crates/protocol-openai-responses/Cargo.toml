@@ -1,0 +1,16 @@
+[package]
+name = "protocol-openai-responses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+provider-x-core = { path = "../provider-x-core" }
+provider-x-protocol = { path = "../provider-x-protocol" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

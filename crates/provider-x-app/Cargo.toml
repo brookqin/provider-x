@@ -1,0 +1,50 @@
+[package]
+name = "provider-x-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "provider-x"
+path = "src/main.rs"
+
+[features]
+default = []
+gpui-runtime-shaders = ["gpui_platform/runtime_shaders"]
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+fs2.workspace = true
+getrandom.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui_platform.workspace = true
+hex.workspace = true
+provider-x-core = { path = "../provider-x-core" }
+provider-x-catalog = { path = "../provider-x-catalog" }
+provider-x-egress = { path = "../provider-x-egress" }
+rust-i18n.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml_edit.workspace = true
+yaml_serde.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSButton", "NSControl", "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+png.workspace = true
+smappservice-rs = "0.1.3"
+tray-icon.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
