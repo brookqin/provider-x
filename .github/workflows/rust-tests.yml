@@ -1,0 +1,32 @@
+name: Rust tests
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - converted_to_draft
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test workspace
+    if: github.event.pull_request.draft == false
+    runs-on: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.85
+        run: rustup toolchain install 1.85.0 --profile minimal --no-self-update
+
+      - name: Run workspace tests
+        run: cargo +1.85.0 test --workspace --locked
