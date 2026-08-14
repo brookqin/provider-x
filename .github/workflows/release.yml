@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish macOS release
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate release tag
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)
+          if [[ -z "$version" ]]; then
+            echo "Could not read the workspace version from Cargo.toml" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match workspace version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --no-self-update
+
+      - name: Build and verify app bundle
+        env:
+          RUSTUP_TOOLCHAIN: 1.97.1
+        run: ./scripts/build-macos-app.sh
+
+      - name: Create DMG and checksum
+        id: package
+        shell: bash
+        run: |
+          dmg_path=$(./scripts/create-macos-dmg.sh)
+          dmg_dir=$(dirname "$dmg_path")
+          dmg_name=$(basename "$dmg_path")
+          (cd "$dmg_dir" && shasum -a 256 "$dmg_name" > "$dmg_name.sha256")
+          echo "dmg_path=$dmg_path" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG_PATH: ${{ steps.package.outputs.dmg_path }}
+        shell: bash
+        run: |
+          release_options=(
+            --verify-tag
+            --title "ProviderX $VERSION"
+            --generate-notes
+          )
+          if [[ "$VERSION" == *-* ]]; then
+            release_options+=(--prerelease)
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              "$DMG_PATH" \
+              "$DMG_PATH.sha256" \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "$DMG_PATH" \
+              "$DMG_PATH.sha256" \
+              "${release_options[@]}"
+          fi

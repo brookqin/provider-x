@@ -6,11 +6,17 @@ PROJECT_DIR=${SCRIPT_DIR:h}
 TARGET_DIR="$PROJECT_DIR/target/macos"
 APP_DIR="$TARGET_DIR/ProviderX.app"
 SIGN_IDENTITY=${PROVIDER_X_CODESIGN_IDENTITY:--}
+APP_VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' "$PROJECT_DIR/Cargo.toml" | head -n 1)
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   print -u2 "provider-x v1 只构建 Apple Silicon macOS 应用"
   exit 1
 fi
+
+[[ -n "$APP_VERSION" ]] || {
+  print -u2 "无法从 Cargo.toml 读取 workspace 版本"
+  exit 1
+}
 
 cargo build --manifest-path "$PROJECT_DIR/Cargo.toml" --release \
   --package provider-x-app --bin provider-x
@@ -26,6 +32,9 @@ fi
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$PROJECT_DIR/target/release/provider-x" "$APP_DIR/Contents/MacOS/provider-x"
 cp "$PROJECT_DIR/crates/provider-x-app/resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$APP_VERSION" \
+  "$APP_DIR/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$APP_VERSION" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/LICENSE" "$APP_DIR/Contents/Resources/LICENSE"
 cp "$PROJECT_DIR/crates/provider-x-app/resources/icons/LICENSE-LUCIDE" \
   "$APP_DIR/Contents/Resources/LICENSE-LUCIDE"

@@ -158,13 +158,15 @@ Apple Silicon macOS packaging and UI-shell checks:
 
 ```sh
 ./scripts/build-macos-app.sh
+./scripts/create-macos-dmg.sh
 ./scripts/smoke-macos-shell.sh
 ```
 
 `build-macos-app.sh` already invokes `verify-macos-app.sh` on the generated app. It creates an ad-hoc
 signature by default; set `PROVIDER_X_CODESIGN_IDENTITY` only when an explicitly authorized signing
-identity is required. `measure-macos-shells.sh` is a measurement tool, not a pass/fail regression
-test; run it only for performance or footprint work and report the observed environment.
+identity is required. `create-macos-dmg.sh` verifies that app bundle again before packaging it.
+`measure-macos-shells.sh` is a measurement tool, not a pass/fail regression test; run it only for
+performance or footprint work and report the observed environment.
 
 Choose additional checks by risk:
 
