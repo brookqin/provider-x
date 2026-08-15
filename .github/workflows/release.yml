@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Validate release tag
         id: version
@@ -49,17 +51,60 @@ jobs:
           (cd "$dmg_dir" && shasum -a 256 "$dmg_name" > "$dmg_name.sha256")
           echo "dmg_path=$dmg_path" >> "$GITHUB_OUTPUT"
 
+      - name: Generate release notes
+        id: release_notes
+        shell: bash
+        run: |
+          notes_path="$RUNNER_TEMP/provider-x-release-notes.md"
+          previous_tag=$(git describe \
+            --tags \
+            --match 'v[0-9]*' \
+            --abbrev=0 \
+            "$GITHUB_REF_NAME^" 2>/dev/null || true)
+
+          if [[ -n "$previous_tag" ]]; then
+            changelog_range="$previous_tag..$GITHUB_REF_NAME"
+          else
+            changelog_range="$GITHUB_REF_NAME"
+          fi
+
+          {
+            cat <<'EOF'
+          > [!IMPORTANT]
+          > ProviderX is not signed with an Apple Developer certificate. After installation, run:
+          >
+          > ```sh
+          > sudo xattr -r -d com.apple.quarantine /Applications/ProviderX.app
+          > ```
+
+          ## Changelog
+
+          EOF
+            git log "$changelog_range" \
+              --no-merges \
+              --format='- %s (`%h`)'
+            if [[ -n "$previous_tag" ]]; then
+              printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+                "$GITHUB_REPOSITORY" \
+                "$previous_tag" \
+                "$GITHUB_REF_NAME"
+            fi
+          } > "$notes_path"
+
+          echo "notes_path=$notes_path" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           DMG_PATH: ${{ steps.package.outputs.dmg_path }}
+          RELEASE_NOTES_PATH: ${{ steps.release_notes.outputs.notes_path }}
         shell: bash
         run: |
           release_options=(
             --verify-tag
             --title "ProviderX $VERSION"
-            --generate-notes
+            --notes-file "$RELEASE_NOTES_PATH"
           )
           if [[ "$VERSION" == *-* ]]; then
             release_options+=(--prerelease)
