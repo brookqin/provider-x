@@ -928,6 +928,46 @@ async fn official_search_request_is_transparently_proxied() {
 }
 
 #[tokio::test]
+async fn other_official_api_methods_and_paths_are_transparently_proxied() {
+    let (official, mut captured) = spawn_upstream(vec![r#"{"deleted":true}"#]).await;
+    let (proxy, shutdown) = spawn_proxy(
+        providers(None, 1_048_576),
+        format!("http://{official}/backend-api/codex"),
+    )
+    .await;
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(ingress_http_url(
+            proxy,
+            "/v1/responses/response-1?reason=user_requested",
+        ))
+        .header("authorization", "Bearer official-secret")
+        .header("chatgpt-account-id", "account")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let response = client().request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        r#"{"deleted":true}"#
+    );
+    let captured = captured.recv().await.unwrap();
+    assert_eq!(captured.method, "DELETE");
+    assert_eq!(
+        captured.path_and_query,
+        "/backend-api/codex/responses/response-1?reason=user_requested"
+    );
+    assert_eq!(
+        captured.authorization.as_deref(),
+        Some("Bearer official-secret")
+    );
+    assert_eq!(captured.chatgpt_account_id.as_deref(), Some("account"));
+    assert!(captured.body.is_empty());
+    shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
 async fn official_model_catalog_is_merged_locally_without_contacting_third_party() {
     let (official, mut official_captured) = spawn_upstream(vec![
         r#"{"models":[{"slug":"gpt-official","opaque":{"kept":true},"model_messages":{"instructions_variables":{"personality_default":"default personality","personality_friendly":"friendly personality","personality_pragmatic":"pragmatic personality"}}}]}"#,
@@ -1282,9 +1322,10 @@ async fn server_uses_next_available_port_in_managed_range() {
 async fn active_websocket_holds_the_only_connection_permit_until_close() {
     let mut configuration = providers(None, 1_048_576);
     configuration.listener.max_connections = 1;
+    let (upstream, mut captured) = spawn_upstream(vec![r#"{"deleted":true}"#]).await;
     let (proxy, shutdown) = spawn_proxy(
         configuration,
-        "http://127.0.0.1:9/backend-api/codex".to_owned(),
+        format!("http://{upstream}/backend-api/codex"),
     )
     .await;
     let (mut websocket, _) = connect_async(ingress_websocket_url(proxy)).await.unwrap();
@@ -1310,7 +1351,8 @@ async fn active_websocket_holds_the_only_connection_permit_until_close() {
         .await
         .expect("the second connection did not resume after the WebSocket closed")
         .unwrap();
-    assert_eq!(response.status(), hyper::StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    assert_eq!(captured.recv().await.unwrap().method, "DELETE");
     shutdown.send(true).unwrap();
 }
 

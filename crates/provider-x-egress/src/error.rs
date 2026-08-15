@@ -20,9 +20,6 @@ pub enum EgressBuildError {
 
 #[derive(Debug, Error)]
 pub enum ProxyError {
-    #[error("only POST is supported")]
-    MethodNotAllowed,
-
     #[error("request body exceeds configured limit")]
     BodyTooLarge,
 

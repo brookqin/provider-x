@@ -12,7 +12,7 @@ use hyper::{
     Method, Request, Response, StatusCode, Uri, body::Incoming, header, service::service_fn,
 };
 use hyper_util::rt::TokioIo;
-use protocol_openai_responses::{http_error_body, inspect_http, rewrite_http_model};
+use protocol_openai_responses::{ResponsesPath, http_error_body, inspect_http, rewrite_http_model};
 use provider_x_core::{ProtocolId, RouteDecision};
 use tokio::{
     net::TcpListener,
@@ -304,14 +304,13 @@ async fn proxy(
     if request.method() == Method::GET && request.uri().path() == "/v1/models" {
         return proxy_official_models(request, state).await;
     }
-    if request.method() == Method::POST && request.uri().path() == "/v1/alpha/search" {
-        return proxy_official_search(request, state).await;
-    }
-    if request.method() != Method::POST {
-        return Err(ProxyError::MethodNotAllowed);
-    }
     let (parts, incoming) = request.into_parts();
     let original_body = collect_request_body(incoming, state).await?;
+    // Only protocol-owned inference requests use model routing. Every other Codex API call stays
+    // on the official control plane even if its payload happens to contain a `model` field.
+    if parts.method != Method::POST || ResponsesPath::try_from(parts.uri.path()).is_err() {
+        return proxy_official_request(parts, original_body, state).await;
+    }
     let encoding = RequestEncoding::from_headers(&parts.headers)?;
     let decoded_body = encoding
         .decode(original_body.clone(), state.request_body_limit_bytes)
@@ -431,12 +430,11 @@ async fn proxy(
     Ok(downstream)
 }
 
-async fn proxy_official_search(
-    request: Request<Incoming>,
+async fn proxy_official_request(
+    parts: hyper::http::request::Parts,
+    body: Bytes,
     state: &EgressState,
 ) -> Result<Response<ProxyBody>, ProxyError> {
-    let (parts, incoming) = request.into_parts();
-    let body = collect_request_body(incoming, state).await?;
     let uri = upstream_uri(&state.official_base_url, &parts.uri)?;
     let mut upstream = Request::builder()
         .method(parts.method)
@@ -577,7 +575,6 @@ fn classify_upstream_error(error: &hyper_util::client::legacy::Error) -> ProxyEr
 
 fn local_error(error: &ProxyError) -> Response<ProxyBody> {
     let status = match error {
-        ProxyError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         ProxyError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         ProxyError::UnsupportedContentEncoding => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         ProxyError::RequestBodyTimeout => StatusCode::REQUEST_TIMEOUT,
