@@ -75,7 +75,6 @@ ProviderX 收到的只有密文，无法为第三方供应商解密或转换。�
 - Apple Silicon Mac（`arm64`）
 - Rust 1.85 或更高版本及 Cargo
 - Xcode Command Line Tools，包括 `codesign`、`iconutil`、`lipo` 和 `plutil`
-- 可从 `PATH`、`/opt/homebrew/bin/codex` 或 `/usr/local/bin/codex` 找到并正常运行的 `codex`
 - 所配置第三方供应商的访问凭据
 
 ProviderX v1 不支持 Intel macOS、Linux 或 Windows。

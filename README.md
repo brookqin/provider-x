@@ -106,8 +106,6 @@ communication. This limitation does not affect selecting a third-party model for
 - Apple Silicon Mac (`arm64`)
 - Rust 1.85 or newer with Cargo
 - Xcode Command Line Tools, including `codesign`, `iconutil`, `lipo`, and `plutil`
-- A working `codex` executable available on `PATH`, `/opt/homebrew/bin/codex`, or
-  `/usr/local/bin/codex`
 - Credentials for each third-party provider you choose to configure
 
 ProviderX v1 does not run on Intel macOS, Linux, or Windows.
