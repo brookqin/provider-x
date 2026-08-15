@@ -4936,7 +4936,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-openai-chat-completions"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "provider-x-core",
@@ -4947,7 +4947,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-openai-responses"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "provider-x-core",
@@ -4958,7 +4958,7 @@ dependencies = [
 
 [[package]]
 name = "provider-x-app"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4990,7 +4990,7 @@ dependencies = [
 
 [[package]]
 name = "provider-x-catalog"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "hex",
@@ -5010,7 +5010,7 @@ dependencies = [
 
 [[package]]
 name = "provider-x-contract-probe"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -5029,7 +5029,7 @@ dependencies = [
 
 [[package]]
 name = "provider-x-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "hex",
  "serde",
@@ -5041,7 +5041,7 @@ dependencies = [
 
 [[package]]
 name = "provider-x-egress"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -5067,7 +5067,7 @@ dependencies = [
 
 [[package]]
 name = "provider-x-network"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "futures-util",
  "hyper",
@@ -5083,7 +5083,7 @@ dependencies = [
 
 [[package]]
 name = "provider-x-protocol"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
 ]
