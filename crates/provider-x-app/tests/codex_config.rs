@@ -66,6 +66,18 @@ fn integration_manages_three_keys_and_restores_exact_bytes() {
 }
 
 #[test]
+fn integration_receipt_does_not_create_history_backups() {
+    let (_home, config_path, receipt_path) = paths();
+    write_config(&config_path, "model = \"gpt-5.6\"\n");
+    let editor = CodexConfigEditor::new(&config_path, &receipt_path);
+
+    editor.apply(&desired(), "enabled").unwrap();
+    editor.restore("restored").unwrap();
+
+    assert!(!receipt_path.parent().unwrap().join("backups").exists());
+}
+
+#[test]
 fn absent_managed_keys_are_removed_again_on_restore() {
     let (_home, config_path, receipt_path) = paths();
     let original = "model = \"gpt-5.6\"\n";

@@ -203,6 +203,6 @@ impl InstallReceiptStore {
         let mut bytes = serde_json::to_vec_pretty(receipt)
             .map_err(|error| ReceiptStoreError::Serialization(error.to_string()))?;
         bytes.push(b'\n');
-        atomic_file::write(&self.path, expected_sha256, &bytes).map_err(Into::into)
+        atomic_file::write_without_backup(&self.path, expected_sha256, &bytes).map_err(Into::into)
     }
 }

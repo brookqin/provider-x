@@ -129,11 +129,7 @@ app:
     registry_write_task: 模型建议缓存写入任务意外退出
     egress_lock: Egress 状态锁已损坏
     egress_health_failed: Egress listener 健康检查失败：%{error}
-    codex_validation_restored: Codex 配置验证失败，已恢复：%{error}
-    codex_validation_restore_failed: Codex 配置验证失败且恢复失败：%{error}；%{restore}
     codex_management_disabled: providers.yaml 已关闭 Codex 用户配置管理
     egress_task_lock: Egress 任务锁已损坏
     egress_shutdown_timeout: Egress 优雅退出超过期限，已强制停止
-    codex_validation_launch_failed: 无法运行 Codex 配置验证
-    codex_config_load_failed: Codex 无法加载更新后的配置
   restart_hint: 完整重启 ChatGPT Desktop 后模型选择器才会更新

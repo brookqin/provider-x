@@ -144,6 +144,20 @@ pub(crate) fn write(
     write_with_policy(path, expected_sha256, bytes, DirectoryPolicy::Private, true)
 }
 
+pub(crate) fn write_without_backup(
+    path: &Path,
+    expected_sha256: Option<&str>,
+    bytes: &[u8],
+) -> Result<LoadedFile, SecureFileError> {
+    write_with_policy(
+        path,
+        expected_sha256,
+        bytes,
+        DirectoryPolicy::Private,
+        false,
+    )
+}
+
 pub(crate) fn write_external(
     path: &Path,
     expected_sha256: Option<&str>,

@@ -43,7 +43,6 @@ pub(crate) struct AppServices {
     pub(crate) control: Arc<Mutex<ControlPlane>>,
     pub(crate) model_registry: ModelRegistryStore,
     pub(crate) codex_config: CodexConfigEditor,
-    codex_path: PathBuf,
     // Rust drops fields in declaration order. Keep the process lock last so a
     // successor cannot start until the egress handle and runtime are gone.
     _single_instance: Arc<SingleInstanceGuard>,
@@ -81,7 +80,6 @@ impl AppServices {
             paths.root.join("provider-x.lock"),
             STARTUP_HANDOFF_WAIT,
         )?);
-        let codex = locate_codex().ok_or_else(|| anyhow::anyhow!("Codex executable not found"))?;
         let control = ControlPlane::load(&paths)?;
         let model_registry = ModelRegistryStore::new(&paths.model_registry);
         let codex_config =
@@ -151,7 +149,6 @@ impl AppServices {
             control: Arc::new(Mutex::new(control)),
             model_registry,
             codex_config,
-            codex_path: codex,
             _single_instance: single_instance,
         };
         if listener_port.is_none() && active_integration.is_some() {
@@ -361,29 +358,8 @@ impl AppServices {
         let desired = self.desired_codex_integration()?;
         self.codex_config
             .apply(&desired, timestamp())
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = validate_codex_config(&self.codex_path) {
-            let restore_error = self
-                .codex_config
-                .restore(timestamp())
-                .err()
-                .map(|restore| restore.to_string());
-            return Err(restore_error.map_or_else(
-                || {
-                    rust_i18n::t!("app.internal.codex_validation_restored", error = error)
-                        .to_string()
-                },
-                |restore| {
-                    rust_i18n::t!(
-                        "app.internal.codex_validation_restore_failed",
-                        error = error,
-                        restore = restore
-                    )
-                    .to_string()
-                },
-            ));
-        }
-        Ok(())
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn desired_codex_integration(&self) -> Result<CodexIntegration, String> {
@@ -447,42 +423,9 @@ fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-fn validate_codex_config(codex: &std::path::Path) -> Result<(), String> {
-    let mut command = std::process::Command::new(codex);
-    command.args(["debug", "models", "--bundled"]);
-    let output = command
-        .output()
-        .map_err(|_| rust_i18n::t!("app.internal.codex_validation_launch_failed").to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(rust_i18n::t!("app.internal.codex_config_load_failed").to_string())
-    }
-}
-
-fn locate_codex() -> Option<PathBuf> {
-    let candidates = std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|path| path.join("codex"))
-        .chain([
-            PathBuf::from("/opt/homebrew/bin/codex"),
-            PathBuf::from("/usr/local/bin/codex"),
-        ]);
-    candidates.into_iter().find(|path| path.is_file())
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use super::{capability_from_base_url, generate_ingress_capability, validate_codex_config};
-
-    #[test]
-    fn fast_codex_validation_preserves_success_and_failure() {
-        assert!(validate_codex_config(Path::new("/usr/bin/true")).is_ok());
-        assert!(validate_codex_config(Path::new("/usr/bin/false")).is_err());
-    }
+    use super::{capability_from_base_url, generate_ingress_capability};
 
     #[test]
     fn capability_is_recovered_only_from_the_managed_base_url_shape() {

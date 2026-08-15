@@ -141,13 +141,7 @@ app:
     registry_write_task: Model recommendation cache write task exited unexpectedly
     egress_lock: Egress state lock is poisoned
     egress_health_failed: 'Egress listener health check failed: %{error}'
-    codex_validation_restored: 'Codex configuration validation failed and the previous
-      configuration was restored: %{error}'
-    codex_validation_restore_failed: 'Codex configuration validation failed and restoration
-      also failed: %{error}; %{restore}'
     codex_management_disabled: providers.yaml disables Codex user configuration management
     egress_task_lock: Egress task lock is poisoned
     egress_shutdown_timeout: Egress graceful shutdown timed out and was forcibly stopped
-    codex_validation_launch_failed: Could not run Codex configuration validation
-    codex_config_load_failed: Codex could not load the updated configuration
   restart_hint: Fully restart ChatGPT Desktop to update the model picker
