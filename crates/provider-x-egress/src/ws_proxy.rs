@@ -32,8 +32,8 @@ use tokio_tungstenite::{
 use tokio_util::task::TaskTracker;
 
 use crate::{
-    EgressEvent, EgressState, ObservedRoute, ObservedTransport, ProxyError, RequestObserved,
-    UpstreamObserved,
+    EgressEvent, EgressState, ErrorObserved, ObservedRoute, ObservedTransport, ProxyError,
+    RequestObserved, UpstreamObserved,
     headers::{official_websocket_headers, third_party_websocket_headers},
     server::ProxyBody,
 };
@@ -119,6 +119,53 @@ pub(crate) enum WebSocketProxyError {
 
     #[error("the WebSocket-to-HTTP session exceeded its bounded history limit")]
     SessionHistoryLimit,
+}
+
+impl WebSocketProxyError {
+    const fn log_code(&self) -> &'static str {
+        match self {
+            Self::TransportNotSupported => "transport_not_supported",
+            Self::ModelNotAvailable => "model_not_available",
+            Self::RouteChanged => "route_changed",
+            Self::IdleTimeout => "idle_timeout",
+            Self::Shutdown => "service_restart",
+            Self::SessionHistoryLimit => "session_history_limit",
+            Self::ConcurrentRequest => "concurrent_request",
+            Self::InvalidFirstMessage => "invalid_request",
+            Self::ProviderNotAvailable => "provider_not_available",
+            Self::UpstreamConnect => "upstream_connect_failed",
+            Self::UpstreamStatus(_) => "upstream_http_status",
+            Self::InvalidUpstreamStream => "invalid_upstream_stream",
+            Self::ClientClosed => "client_closed",
+            Self::Transport => "websocket_transport_failed",
+        }
+    }
+
+    const fn status(&self) -> Option<u16> {
+        match self {
+            Self::UpstreamStatus(status) => Some(status.as_u16()),
+            _ => None,
+        }
+    }
+
+    const fn client_code(&self) -> &'static str {
+        match self {
+            Self::TransportNotSupported => "transport_not_supported",
+            Self::ModelNotAvailable => "model_not_available",
+            Self::RouteChanged => "route_changed",
+            Self::IdleTimeout => "idle_timeout",
+            Self::Shutdown => "service_restart",
+            Self::SessionHistoryLimit => "session_history_limit",
+            Self::ConcurrentRequest => "concurrent_request",
+            Self::InvalidFirstMessage => "invalid_request",
+            Self::ProviderNotAvailable
+            | Self::UpstreamConnect
+            | Self::UpstreamStatus(_)
+            | Self::InvalidUpstreamStream
+            | Self::ClientClosed
+            | Self::Transport => "upstream_error",
+        }
+    }
 }
 
 pub(crate) fn is_websocket_upgrade(request: &Request<Incoming>) -> bool {
@@ -306,10 +353,30 @@ async fn run_session(
     .await;
 
     if let Err(error) = result
-        && !matches!(error, WebSocketProxyError::ClientClosed)
+        && is_reportable_session_error(&error)
     {
+        observe_session_error(&state, &error);
         reject_downstream(&mut downstream, &error).await;
     }
+}
+
+fn is_reportable_session_error(error: &WebSocketProxyError) -> bool {
+    !matches!(
+        error,
+        WebSocketProxyError::ClientClosed | WebSocketProxyError::Shutdown
+    )
+}
+
+fn observe_session_error(state: &EgressState, error: &WebSocketProxyError) {
+    state.observe(EgressEvent::ErrorObserved(ErrorObserved {
+        transport: ObservedTransport::WebSocket,
+        method: "GET".to_owned(),
+        path: "/v1/responses".to_owned(),
+        ingress_authorized: true,
+        status: error.status(),
+        code: error.log_code().to_owned(),
+        message: error.to_string(),
+    }));
 }
 
 async fn receive_first_message(
@@ -652,22 +719,7 @@ fn prepare_followup_message(
 }
 
 async fn reject_downstream(downstream: &mut DownstreamSocket, error: &WebSocketProxyError) {
-    let code = match error {
-        WebSocketProxyError::TransportNotSupported => "transport_not_supported",
-        WebSocketProxyError::ModelNotAvailable => "model_not_available",
-        WebSocketProxyError::RouteChanged => "route_changed",
-        WebSocketProxyError::IdleTimeout => "idle_timeout",
-        WebSocketProxyError::Shutdown => "service_restart",
-        WebSocketProxyError::SessionHistoryLimit => "session_history_limit",
-        WebSocketProxyError::ConcurrentRequest => "concurrent_request",
-        WebSocketProxyError::InvalidFirstMessage => "invalid_request",
-        WebSocketProxyError::ProviderNotAvailable
-        | WebSocketProxyError::UpstreamConnect
-        | WebSocketProxyError::UpstreamStatus(_)
-        | WebSocketProxyError::InvalidUpstreamStream
-        | WebSocketProxyError::ClientClosed
-        | WebSocketProxyError::Transport => "upstream_error",
-    };
+    let code = error.client_code();
     let event = websocket_error_event(code, &error.to_string());
     let _ = downstream.send(Message::text(event)).await;
     let close_code = if matches!(error, WebSocketProxyError::Shutdown) {

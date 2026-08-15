@@ -297,7 +297,10 @@ fn launch(
                 let should_continue = cx.update(|cx| match command {
                     TrayCommand::OpenSettings => {
                         if let Err(error) = open_or_focus_settings(cx) {
-                            eprintln!("failed to open settings: {error:#}");
+                            let message = format!("failed to open settings: {error:#}");
+                            cx.global::<AppServices>()
+                                .record_runtime_error("open_settings_failed", &message);
+                            eprintln!("{message}");
                         }
                         true
                     }
@@ -376,7 +379,9 @@ fn manage_codex_integration_from_tray(cx: &mut App, tray: Rc<MacTrayController>)
         .is_ok_and(codex_integration_is_active);
     if !enabled {
         if let Err(error) = open_or_focus_settings(cx) {
-            eprintln!("failed to open settings for Codex integration: {error:#}");
+            let message = format!("failed to open settings for Codex integration: {error:#}");
+            services.record_runtime_error("open_codex_settings_failed", &message);
+            eprintln!("{message}");
         }
         return;
     }
@@ -396,7 +401,9 @@ fn manage_codex_integration_from_tray(cx: &mut App, tray: Rc<MacTrayController>)
                 sync_settings_codex_status(cx, &status, &tr!("app.codex.restored_tray"), true);
             }
             Err(error) => {
-                eprintln!("failed to disable Codex integration: {error}");
+                let diagnostic = redacted_codex_disable_diagnostic(&error);
+                status_services.record_runtime_error("codex_disable_failed", diagnostic);
+                eprintln!("{diagnostic}");
                 if let Ok(status) = status_services.codex_status() {
                     tray.set_codex_enabled(codex_integration_is_active(&status));
                     sync_settings_codex_status(cx, &status, &error, false);
@@ -405,9 +412,12 @@ fn manage_codex_integration_from_tray(cx: &mut App, tray: Rc<MacTrayController>)
                     sync_settings_codex_error(cx, error);
                 }
                 if let Err(open_error) = open_or_focus_settings(cx) {
-                    eprintln!(
+                    let message = format!(
                         "failed to open settings after Codex integration error: {open_error:#}"
                     );
+                    status_services
+                        .record_runtime_error("open_settings_after_codex_error_failed", &message);
+                    eprintln!("{message}");
                 }
             }
         });
@@ -434,6 +444,10 @@ fn sync_settings_codex_status(
     }
 }
 
+fn redacted_codex_disable_diagnostic(_error: &str) -> &'static str {
+    "failed to disable Codex integration; open settings for details"
+}
+
 fn sync_settings_codex_error(cx: &mut App, error: String) {
     let settings = cx.global::<SettingsRegistry>().view.clone();
     if let Some(settings) = settings {
@@ -450,6 +464,7 @@ fn sync_settings_codex_error(cx: &mut App, error: String) {
 fn graceful_quit(cx: &mut App) {
     let services = cx.global::<AppServices>().clone();
     let shutdown_services = services.clone();
+    let log_services = services.clone();
     let receiver = services.spawn(async move { shutdown_services.shutdown_egress().await });
     cx.spawn(async move |cx| {
         let result = receiver
@@ -457,6 +472,7 @@ fn graceful_quit(cx: &mut App) {
             .unwrap_or_else(|_| Err(tr!("app.internal.egress_exit_task")));
         cx.update(|cx| {
             if let Err(error) = result {
+                log_services.record_runtime_error("egress_shutdown_failed", &error);
                 eprintln!("{error}");
             }
             cx.quit();
@@ -2935,7 +2951,21 @@ mod tests {
     use super::{
         AppAssets, EMBEDDED_ASSETS, REFRESH_MODELS_ICON_PATH, SETTINGS_APP_ICON_DARK_PATH,
         SETTINGS_APP_ICON_LIGHT_PATH, next_available_provider_id, provider_namespace_from_name,
+        redacted_codex_disable_diagnostic,
     };
+
+    #[test]
+    fn codex_disable_diagnostic_does_not_expose_configuration_error_details() {
+        let sensitive_error = "TOML parse error near api_key = sensitive-config-sentinel";
+        let diagnostic = redacted_codex_disable_diagnostic(sensitive_error);
+
+        assert_eq!(
+            diagnostic,
+            "failed to disable Codex integration; open settings for details"
+        );
+        assert!(!diagnostic.contains("sensitive-config-sentinel"));
+        assert!(!diagnostic.contains("api_key"));
+    }
 
     #[test]
     fn minimal_asset_bundle_covers_every_app_and_component_icon() {

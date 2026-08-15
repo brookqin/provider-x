@@ -20,6 +20,7 @@ pub struct AppPaths {
     pub model_registry: PathBuf,
     pub install_receipt: PathBuf,
     pub ui_locale: PathBuf,
+    pub logs: PathBuf,
 }
 
 impl AppPaths {
@@ -34,6 +35,7 @@ impl AppPaths {
             model_registry: root.join("cache/model-registry.json"),
             install_receipt: root.join("install-receipt.json"),
             ui_locale: root.join("ui-locale"),
+            logs: root.join("logs"),
             root,
         }
     }

@@ -71,3 +71,27 @@ pub enum ProxyError {
     #[error("failed to connect to upstream")]
     UpstreamConnect,
 }
+
+impl ProxyError {
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::BodyTooLarge => "body_too_large",
+            Self::RequestBodyTimeout => "request_body_timeout",
+            Self::UnsupportedContentEncoding => "unsupported_content_encoding",
+            Self::InvalidRequest(_) => "invalid_request",
+            Self::InvalidWebSocketHandshake => "invalid_websocket_handshake",
+            Self::IngressNotFound => "ingress_not_found",
+            Self::CrossOriginWebSocket => "cross_origin_websocket",
+            Self::ModelNotAvailable => "model_not_available",
+            Self::ProviderNotAvailable => "provider_not_available",
+            Self::InvalidUpstreamUri => "invalid_upstream_uri",
+            Self::RequestBuild => "request_build_failed",
+            Self::ResponseHeadersTimeout => "response_headers_timeout",
+            Self::ModelCatalogBodyTimeout => "model_catalog_body_timeout",
+            Self::ModelCatalogBodyTooLarge => "model_catalog_body_too_large",
+            Self::InvalidOfficialModelCatalog => "invalid_official_model_catalog",
+            Self::Upstream => "upstream_request_failed",
+            Self::UpstreamConnect => "upstream_connect_failed",
+        }
+    }
+}

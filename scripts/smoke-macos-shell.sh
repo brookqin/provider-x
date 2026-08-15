@@ -39,6 +39,14 @@ done
 grep -q "PROVIDER_X_SMOKE tray=ready activation_policy=accessory" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE egress=ready address=127.0.0.1:" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE settings_window=open" "$LOG_FILE"
+EGRESS_ADDRESS=$(sed -n 's/^PROVIDER_X_SMOKE egress=ready address=\(127\.0\.0\.1:[0-9][0-9]*\)$/\1/p' "$LOG_FILE" | tail -n 1)
+[[ -n "$EGRESS_ADDRESS" ]]
+ERROR_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "http://$EGRESS_ADDRESS/v1/responses")
+[[ "$ERROR_STATUS" == "404" ]]
+ERROR_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "http://$EGRESS_ADDRESS/not-an-api-path")
+[[ "$ERROR_STATUS" == "404" ]]
 
 if HOME="$SMOKE_HOME" "$APP_DIR/Contents/MacOS/provider-x" \
   --smoke-lock-only >"$SECOND_LOG" 2>&1; then
@@ -48,6 +56,21 @@ fi
 grep -q "another provider-x instance already owns the application lock" "$SECOND_LOG"
 [[ "$(stat -f %Lp "$SMOKE_HOME/Library/Application Support/dev.qiankun.provider-x")" == "700" ]]
 [[ "$(stat -f %Lp "$SMOKE_HOME/Library/Application Support/dev.qiankun.provider-x/provider-x.lock")" == "600" ]]
+SMOKE_LOG_DIR="$SMOKE_HOME/Library/Application Support/dev.qiankun.provider-x/logs"
+[[ "$(stat -f %Lp "$SMOKE_LOG_DIR")" == "700" ]]
+SMOKE_LOG_FILES=("$SMOKE_LOG_DIR"/provider-x-*.log(N))
+[[ ${#SMOKE_LOG_FILES[@]} -eq 1 ]]
+[[ "$(stat -f %Lp "$SMOKE_LOG_FILES[1]")" == "600" ]]
+for _ in {1..20}; do
+  if grep -q '"code":"ingress_not_found"' "$SMOKE_LOG_FILES[1]"; then
+    break
+  fi
+  sleep 0.05
+done
+grep -q '"code":"ingress_not_found"' "$SMOKE_LOG_FILES[1]"
+grep -q '"path":"/v1/responses"' "$SMOKE_LOG_FILES[1]"
+grep -q '"path":"/not-an-api-path"' "$SMOKE_LOG_FILES[1]"
+grep -q '"ingress_authorized":false' "$SMOKE_LOG_FILES[1]"
 
 RSS_KB=$(ps -o rss= -p "$APP_PID" | tr -d ' ')
 wait "$APP_PID"

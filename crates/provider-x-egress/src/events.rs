@@ -59,16 +59,30 @@ pub struct FallbackObserved {
     pub status: u16,
 }
 
-/// Redacted events emitted by the data plane for contract validation.
+/// A redacted request failure. Messages are supplied only by typed proxy errors and never include
+/// headers, query strings, request bodies, response bodies, or ingress capabilities.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ErrorObserved {
+    pub transport: ObservedTransport,
+    pub method: String,
+    pub path: String,
+    pub ingress_authorized: bool,
+    pub status: Option<u16>,
+    pub code: String,
+    pub message: String,
+}
+
+/// Redacted events emitted by the data plane for diagnostics and contract validation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EgressEvent {
     RequestObserved(RequestObserved),
     UpstreamObserved(UpstreamObserved),
     FallbackObserved(FallbackObserved),
+    ErrorObserved(ErrorObserved),
 }
 
-/// Receives redacted contract events. Production uses a no-op observer by default.
+/// Receives redacted events. Egress state defaults to a no-op observer; the app installs logging.
 pub trait EgressObserver: Send + Sync + 'static {
     fn record(&self, event: EgressEvent);
 }
@@ -81,7 +95,7 @@ impl EgressObserver for NoopObserver {
 
 #[cfg(test)]
 mod tests {
-    use super::{EgressEvent, ObservedRoute, ObservedTransport, RequestObserved};
+    use super::{EgressEvent, ErrorObserved, ObservedRoute, ObservedTransport, RequestObserved};
 
     #[test]
     fn serialized_contract_event_contains_no_request_content_or_credentials() {
@@ -101,5 +115,23 @@ mod tests {
         assert!(!serialized.contains("authorization"));
         assert!(!serialized.contains("chatgpt-account-id"));
         assert!(!serialized.contains("request_body"));
+    }
+
+    #[test]
+    fn serialized_error_event_contains_only_redacted_diagnostics() {
+        let event = EgressEvent::ErrorObserved(ErrorObserved {
+            transport: ObservedTransport::Http,
+            method: "POST".to_owned(),
+            path: "/v1/responses".to_owned(),
+            ingress_authorized: true,
+            status: Some(502),
+            code: "upstream_connect_failed".to_owned(),
+            message: "failed to connect to upstream".to_owned(),
+        });
+        let serialized = serde_json::to_string(&event).unwrap();
+        assert!(serialized.contains("upstream_connect_failed"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("request_body"));
+        assert!(!serialized.contains("response_body"));
     }
 }

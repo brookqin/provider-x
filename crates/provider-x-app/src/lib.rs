@@ -14,4 +14,6 @@ pub(crate) mod localization;
 pub mod platform;
 #[cfg(target_os = "macos")]
 mod runtime;
+#[cfg(target_os = "macos")]
+mod runtime_log;
 pub mod storage;

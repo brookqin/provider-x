@@ -22,8 +22,8 @@ use tokio::{
 use tokio_util::task::TaskTracker;
 
 use crate::{
-    EgressEvent, EgressState, FallbackObserved, ObservedRoute, ObservedTransport, ProxyError,
-    RequestObserved, UpstreamObserved,
+    EgressEvent, EgressState, ErrorObserved, FallbackObserved, ObservedRoute, ObservedTransport,
+    ProxyError, RequestObserved, UpstreamObserved,
     headers::{
         official_model_catalog_headers, official_request_headers, response_headers,
         rewritten_response_headers, third_party_request_headers,
@@ -222,12 +222,32 @@ async fn handle(
     websocket_shutdown: watch::Receiver<WebSocketShutdown>,
     connection_permit: Arc<OwnedSemaphorePermit>,
 ) -> Response<ProxyBody> {
+    let method = request.method().to_string();
     if let Err(error) = authorize_ingress(&mut request, &state) {
+        let path = unauthorized_request_path(request.uri().path());
+        observe_proxy_error(
+            &state,
+            ObservedTransport::Http,
+            &method,
+            &path,
+            false,
+            &error,
+        );
         return local_error(&error);
     }
+    let path = request.uri().path().to_owned();
     if is_websocket_upgrade(&request) {
         if request.headers().contains_key(header::ORIGIN) {
-            return local_error(&ProxyError::CrossOriginWebSocket);
+            let error = ProxyError::CrossOriginWebSocket;
+            observe_proxy_error(
+                &state,
+                ObservedTransport::WebSocket,
+                &method,
+                &path,
+                true,
+                &error,
+            );
+            return local_error(&error);
         }
         if state.websocket_fallback_on_upgrade {
             state.observe(EgressEvent::FallbackObserved(FallbackObserved {
@@ -239,19 +259,97 @@ async fn handle(
         }
         return match websocket_upgrade(
             request,
-            state,
+            Arc::clone(&state),
             &websocket_tasks,
             websocket_shutdown,
             connection_permit,
         ) {
             Ok(response) => response,
-            Err(error) => local_error(&error),
+            Err(error) => {
+                observe_proxy_error(
+                    &state,
+                    ObservedTransport::WebSocket,
+                    &method,
+                    &path,
+                    true,
+                    &error,
+                );
+                local_error(&error)
+            }
         };
     }
     match proxy(request, &state).await {
-        Ok(response) => response,
-        Err(error) => local_error(&error),
+        Ok(response) => {
+            if response.status().is_client_error() || response.status().is_server_error() {
+                state.observe(EgressEvent::ErrorObserved(ErrorObserved {
+                    transport: ObservedTransport::Http,
+                    method,
+                    path,
+                    ingress_authorized: true,
+                    status: Some(response.status().as_u16()),
+                    code: "upstream_http_status".to_owned(),
+                    message: "upstream returned an HTTP error status".to_owned(),
+                }));
+            }
+            response
+        }
+        Err(error) => {
+            observe_proxy_error(
+                &state,
+                ObservedTransport::Http,
+                &method,
+                &path,
+                true,
+                &error,
+            );
+            local_error(&error)
+        }
     }
+}
+
+fn observe_proxy_error(
+    state: &EgressState,
+    transport: ObservedTransport,
+    method: &str,
+    path: &str,
+    ingress_authorized: bool,
+    error: &ProxyError,
+) {
+    state.observe(EgressEvent::ErrorObserved(ErrorObserved {
+        transport,
+        method: method.to_owned(),
+        path: path.to_owned(),
+        ingress_authorized,
+        status: Some(proxy_error_status(error).as_u16()),
+        code: error.code().to_owned(),
+        message: error.to_string(),
+    }));
+}
+
+fn unauthorized_request_path(path: &str) -> String {
+    let Some(candidate_and_suffix) = path.strip_prefix('/') else {
+        return path.to_owned();
+    };
+    let (candidate, suffix) = candidate_and_suffix
+        .split_once('/')
+        .map_or((candidate_and_suffix, None), |(candidate, suffix)| {
+            (candidate, Some(suffix))
+        });
+    if !looks_like_capability(candidate) {
+        return path.to_owned();
+    }
+
+    suffix.map_or_else(
+        || "/<redacted-capability>".to_owned(),
+        |suffix| format!("/<redacted-capability>/{suffix}"),
+    )
+}
+
+fn looks_like_capability(segment: &str) -> bool {
+    segment.len() == 64
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_loopback(ip: IpAddr) -> Result<(), std::io::Error> {
@@ -574,7 +672,22 @@ fn classify_upstream_error(error: &hyper_util::client::legacy::Error) -> ProxyEr
 }
 
 fn local_error(error: &ProxyError) -> Response<ProxyBody> {
-    let status = match error {
+    let status = proxy_error_status(error);
+    let mut response = Response::new(
+        Full::new(http_error_body(&error.to_string()))
+            .map_err(|never| match never {})
+            .boxed(),
+    );
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+fn proxy_error_status(error: &ProxyError) -> StatusCode {
+    match error {
         ProxyError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         ProxyError::UnsupportedContentEncoding => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         ProxyError::RequestBodyTimeout => StatusCode::REQUEST_TIMEOUT,
@@ -594,16 +707,5 @@ fn local_error(error: &ProxyError) -> Response<ProxyBody> {
         | ProxyError::RequestBuild
         | ProxyError::UpstreamConnect
         | ProxyError::Upstream => StatusCode::BAD_GATEWAY,
-    };
-    let mut response = Response::new(
-        Full::new(http_error_body(&error.to_string()))
-            .map_err(|never| match never {})
-            .boxed(),
-    );
-    *response.status_mut() = status;
-    response.headers_mut().insert(
-        hyper::header::CONTENT_TYPE,
-        hyper::header::HeaderValue::from_static("application/json"),
-    );
-    response
+    }
 }

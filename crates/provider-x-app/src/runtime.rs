@@ -9,7 +9,7 @@ use chrono::{SecondsFormat, Utc};
 use gpui::Global;
 use provider_x_catalog::{ManualDiscoveryClient, RefreshPreview};
 use provider_x_core::{ProviderConfig, ProviderId, ProviderModelCache};
-use provider_x_egress::{EgressServer, EgressState, IngressCapability};
+use provider_x_egress::{EgressObserver, EgressServer, EgressState, IngressCapability};
 use tokio::{
     runtime::Runtime,
     sync::{oneshot, watch},
@@ -18,6 +18,7 @@ use tokio::{
 
 use crate::codex_config::{CodexConfigEditor, CodexConfigStatus, CodexIntegration, ReceiptPhase};
 use crate::control_plane::{AppPaths, ControlMutation, ControlPlane};
+use crate::runtime_log::RuntimeLog;
 use crate::storage::{
     ModelRegistryStore, ModelRegistryStoreError, SecureFileError, SingleInstanceGuard,
 };
@@ -43,6 +44,7 @@ pub(crate) struct AppServices {
     pub(crate) control: Arc<Mutex<ControlPlane>>,
     pub(crate) model_registry: ModelRegistryStore,
     pub(crate) codex_config: CodexConfigEditor,
+    runtime_log: Arc<RuntimeLog>,
     // Rust drops fields in declaration order. Keep the process lock last so a
     // successor cannot start until the egress handle and runtime are gone.
     _single_instance: Arc<SingleInstanceGuard>,
@@ -80,6 +82,7 @@ impl AppServices {
             paths.root.join("provider-x.lock"),
             STARTUP_HANDOFF_WAIT,
         )?);
+        let runtime_log = RuntimeLog::start(&paths.logs)?;
         let control = ControlPlane::load(&paths)?;
         let model_registry = ModelRegistryStore::new(&paths.model_registry);
         let codex_config =
@@ -98,12 +101,16 @@ impl AppServices {
         );
         let listener = &control.providers().listener;
         let listener_ip = listener.host.parse::<IpAddr>()?;
-        let egress_state = Arc::new(EgressState::new(
-            control.providers(),
-            control.cache(),
-            "https://chatgpt.com/backend-api/codex",
-            ingress_capability.clone(),
-        )?);
+        let egress_observer: Arc<dyn EgressObserver> = runtime_log.clone();
+        let egress_state = Arc::new(
+            EgressState::new(
+                control.providers(),
+                control.cache(),
+                "https://chatgpt.com/backend-api/codex",
+                ingress_capability.clone(),
+            )?
+            .with_observer(egress_observer),
+        );
         let server = if let Some(port) = listener_port {
             runtime.block_on(EgressServer::bind(
                 SocketAddr::new(listener_ip, port),
@@ -120,11 +127,14 @@ impl AppServices {
         let (shutdown, shutdown_rx) = watch::channel(false);
         let failure = Arc::new(Mutex::new(None));
         let failure_task = Arc::clone(&failure);
+        let failure_log = Arc::clone(&runtime_log);
         let task = runtime.spawn(async move {
-            if let Err(error) = server.run(shutdown_rx).await
-                && let Ok(mut failure) = failure_task.lock()
-            {
-                *failure = Some(error.to_string());
+            if let Err(error) = server.run(shutdown_rx).await {
+                let message = error.to_string();
+                failure_log.record_runtime_error("egress_server_stopped", &message);
+                if let Ok(mut failure) = failure_task.lock() {
+                    *failure = Some(message);
+                }
             }
         });
         runtime.block_on(tokio::net::TcpStream::connect(address))?;
@@ -149,6 +159,7 @@ impl AppServices {
             control: Arc::new(Mutex::new(control)),
             model_registry,
             codex_config,
+            runtime_log,
             _single_instance: single_instance,
         };
         if listener_port.is_none() && active_integration.is_some() {
@@ -183,6 +194,11 @@ impl AppServices {
             let _ = sender.send(output);
         });
         receiver
+    }
+
+    pub(crate) fn record_runtime_error(&self, code: &str, message: &str) {
+        // Callers must pass typed/user-visible errors that contain no credentials or config bytes.
+        self.runtime_log.record_runtime_error(code, message);
     }
 
     pub(crate) fn apply_provider_mutation(

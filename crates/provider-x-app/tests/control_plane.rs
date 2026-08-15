@@ -79,6 +79,7 @@ fn app_paths_use_the_bundle_identifier_directory() {
     assert_eq!(paths.providers, paths.root.join("providers.yaml"));
     assert_eq!(paths.model_cache, paths.root.join("cache/models.yaml"));
     assert_eq!(paths.ui_locale, paths.root.join("ui-locale"));
+    assert_eq!(paths.logs, paths.root.join("logs"));
 }
 
 #[test]

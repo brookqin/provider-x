@@ -12,7 +12,7 @@ mod ws_proxy;
 
 pub use error::{EgressBuildError, ProxyError};
 pub use events::{
-    EgressEvent, EgressObserver, FallbackObserved, ObservedRoute, ObservedTransport,
+    EgressEvent, EgressObserver, ErrorObserved, FallbackObserved, ObservedRoute, ObservedTransport,
     RequestObserved, UpstreamObserved,
 };
 pub use server::EgressServer;

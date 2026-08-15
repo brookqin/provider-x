@@ -968,6 +968,40 @@ async fn other_official_api_methods_and_paths_are_transparently_proxied() {
 }
 
 #[tokio::test]
+async fn upstream_connection_errors_emit_redacted_request_diagnostics() {
+    let observer = Arc::new(CollectingObserver::default());
+    let contract_observer: Arc<dyn EgressObserver> = observer.clone();
+    let (proxy, shutdown) = spawn_proxy_with_observer(
+        providers(None, 1_048_576),
+        "http://127.0.0.1:9/backend-api/codex".to_owned(),
+        Some(contract_observer),
+    )
+    .await;
+    let request = Request::builder()
+        .method("GET")
+        .uri(ingress_http_url(
+            proxy,
+            "/v1/responses/response-1?account_id=must-not-be-logged",
+        ))
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let response = client().request(request).await.unwrap();
+    assert_eq!(response.status(), hyper::StatusCode::BAD_GATEWAY);
+    assert!(observer.records().iter().any(|event| matches!(
+        event,
+        EgressEvent::ErrorObserved(error)
+            if error.method == "GET"
+                && error.path == "/v1/responses/response-1"
+                && error.ingress_authorized
+                && error.status == Some(502)
+                && error.code == "upstream_connect_failed"
+                && !error.message.contains("must-not-be-logged")
+    )));
+    shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
 async fn official_model_catalog_is_merged_locally_without_contacting_third_party() {
     let (official, mut official_captured) = spawn_upstream(vec![
         r#"{"models":[{"slug":"gpt-official","opaque":{"kept":true},"model_messages":{"instructions_variables":{"personality_default":"default personality","personality_friendly":"friendly personality","personality_pragmatic":"pragmatic personality"}}}]}"#,
@@ -1370,6 +1404,7 @@ async fn requests_without_the_exact_capability_are_rejected_before_routing() {
     for path in [
         "/v1/responses",
         "/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/v1/responses",
+        "/not-an-api-path",
     ] {
         let request = Request::builder()
             .method("POST")
@@ -1381,7 +1416,25 @@ async fn requests_without_the_exact_capability_are_rejected_before_routing() {
         let response = client().request(request).await.unwrap();
         assert_eq!(response.status(), hyper::StatusCode::NOT_FOUND);
     }
-    assert!(observer.records().is_empty());
+    let records = observer.records();
+    assert_eq!(records.len(), 3);
+    let errors: Vec<_> = records
+        .iter()
+        .filter_map(|event| match event {
+            EgressEvent::ErrorObserved(error) => Some(error),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 3);
+    assert_eq!(errors[0].path, "/v1/responses");
+    assert_eq!(errors[1].path, "/<redacted-capability>/v1/responses");
+    assert!(!errors[1].path.contains("ffffffffffffffff"));
+    assert_eq!(errors[2].path, "/not-an-api-path");
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.code == "ingress_not_found" && !error.ingress_authorized)
+    );
     shutdown.send(true).unwrap();
 }
 
@@ -1560,7 +1613,9 @@ async fn official_websocket_preserves_credentials_and_supports_multiple_turns() 
         .iter()
         .filter_map(|event| match event {
             EgressEvent::RequestObserved(event) => Some(event),
-            EgressEvent::UpstreamObserved(_) | EgressEvent::FallbackObserved(_) => None,
+            EgressEvent::UpstreamObserved(_)
+            | EgressEvent::FallbackObserved(_)
+            | EgressEvent::ErrorObserved(_) => None,
         })
         .collect();
     assert_eq!(request_records.len(), 2);
