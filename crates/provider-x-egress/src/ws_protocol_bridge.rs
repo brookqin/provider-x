@@ -1,7 +1,7 @@
 use protocol_anthropic_messages::AnthropicMessagesWsHttpAdapter;
 use protocol_openai_chat_completions::ChatCompletionsWsHttpAdapter;
 use protocol_openai_responses::ResponsesWsHttpAdapter;
-use provider_x_core::ProtocolId;
+use provider_x_providers::WsHttpAdapterKind;
 use tokio::sync::watch;
 
 use crate::{
@@ -24,8 +24,13 @@ pub(crate) async fn run(
     state: &EgressState,
     shutdown: &mut watch::Receiver<WebSocketShutdown>,
 ) -> Result<(), WebSocketProxyError> {
-    match provider.config.protocol {
-        ProtocolId::OpenaiResponses => {
+    let provider_x_providers::WebSocketPlan::HttpBridge(adapter) =
+        provider.profile.websocket_plan()
+    else {
+        return Err(WebSocketProxyError::TransportNotSupported);
+    };
+    match adapter {
+        WsHttpAdapterKind::OpenaiResponses => {
             crate::ws_http_runner::run::<ResponsesWsHttpAdapter>(
                 downstream,
                 WsHttpSessionContext {
@@ -42,7 +47,7 @@ pub(crate) async fn run(
             )
             .await
         }
-        ProtocolId::OpenaiChatCompletions => {
+        WsHttpAdapterKind::OpenaiChatCompletions => {
             crate::ws_http_runner::run::<ChatCompletionsWsHttpAdapter>(
                 downstream,
                 WsHttpSessionContext {
@@ -59,11 +64,11 @@ pub(crate) async fn run(
             )
             .await
         }
-        ProtocolId::AnthropicMessages => {
+        WsHttpAdapterKind::AnthropicMessages => {
             let adapter = AnthropicMessagesWsHttpAdapter::new_session_with_thinking_mode(
                 upstream_model.clone(),
                 state.request_body_limit_bytes,
-                provider.config.anthropic_thinking_mode(),
+                provider.profile.anthropic_thinking_mode(),
             );
             crate::ws_http_runner::run_with_adapter::<AnthropicMessagesWsHttpAdapter>(
                 downstream,

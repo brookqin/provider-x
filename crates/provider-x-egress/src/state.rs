@@ -10,6 +10,7 @@ use provider_x_core::{
     RuntimeSnapshot,
 };
 use provider_x_network::{NetworkConnector, build_http_connector, build_websocket_connector};
+use provider_x_providers::{ProviderProfile, build_runtime_snapshot, resolve_provider};
 use tokio::sync::Semaphore;
 
 use crate::{EgressBuildError, EgressEvent, EgressObserver, events::NoopObserver};
@@ -19,6 +20,7 @@ pub(crate) type UpstreamClient = Client<NetworkConnector, Full<Bytes>>;
 #[derive(Clone)]
 pub(crate) struct ProviderEgress {
     pub(crate) config: ProviderConfig,
+    pub(crate) profile: ProviderProfile,
     pub(crate) client: UpstreamClient,
     pub(crate) websocket_connector: NetworkConnector,
 }
@@ -131,7 +133,7 @@ impl EgressState {
             build_transport(providers, &proxy_environment)?;
         Ok(Self {
             runtime: Arc::new(ArcSwap::from_pointee(EgressRuntimeSnapshot {
-                routes: RuntimeSnapshot::build(providers, cache)?,
+                routes: build_runtime_snapshot(providers, cache)?,
                 providers: provider_map,
                 catalog_overlay,
             })),
@@ -181,7 +183,7 @@ impl EgressState {
         cache: &ModelCacheDocument,
     ) -> Result<PreparedEgressReload, EgressBuildError> {
         providers.validate()?;
-        let routes = RuntimeSnapshot::build(providers, cache)?;
+        let routes = build_runtime_snapshot(providers, cache)?;
         let proxy_environment = ProxyEnvironment::read();
         let provider_map = build_provider_map(providers, &proxy_environment)?;
         let catalog_overlay = CatalogOverlay::from_documents(providers, cache)?;
@@ -238,6 +240,7 @@ fn build_provider_map(
             .insert(
                 provider.id.clone(),
                 ProviderEgress {
+                    profile: resolve_provider(provider),
                     config: provider.clone(),
                     client,
                     websocket_connector,
@@ -285,6 +288,7 @@ mod tests {
             name: "Provider A".to_owned(),
             description: None,
             enabled: true,
+            kind: provider_x_core::ProviderKind::Custom,
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
             endpoints: EndpointConfig {
@@ -300,9 +304,11 @@ mod tests {
                 websocket: false,
             },
         };
-        let fingerprint = provider.routing_fingerprint().unwrap();
+        let fingerprint = provider_x_providers::resolve_provider(&provider)
+            .routing_fingerprint()
+            .unwrap();
         let providers = ProvidersDocument {
-            schema_version: 1,
+            schema_version: provider_x_core::SCHEMA_VERSION,
             listener: ListenerConfig {
                 host: "127.0.0.1".to_owned(),
                 port: 43_119,

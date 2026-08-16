@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use provider_x_core::{MetadataSource, ModelId, ProviderConfig, ProviderModelSpec};
+use provider_x_providers::resolve_provider;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -61,13 +62,17 @@ pub(crate) fn apply_registry_suggestions(
     cache: &ModelRegistryCache,
 ) -> Result<Vec<ModelId>, CatalogError> {
     cache.validate()?;
-    let Some(provider_entry) = cache.payload.get(provider.id.as_str()) else {
+    let profile = resolve_provider(provider);
+    let registry_provider_id = profile
+        .models_dev_id()
+        .unwrap_or_else(|| provider.id.as_str());
+    let Some(provider_entry) = cache.payload.get(registry_provider_id) else {
         return Ok(Vec::new());
     };
     if provider_entry
         .get("id")
         .and_then(Value::as_str)
-        .is_some_and(|id| id != provider.id.as_str())
+        .is_some_and(|id| id != registry_provider_id)
     {
         return Ok(Vec::new());
     }
@@ -188,6 +193,7 @@ mod tests {
             name: "Provider".to_owned(),
             description: None,
             enabled: false,
+            kind: provider_x_core::ProviderKind::Custom,
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
             endpoints: EndpointConfig {
@@ -209,7 +215,9 @@ mod tests {
         let model_id = provider_x_core::ModelId::new("coder").unwrap();
         RefreshPreview {
             cache: ProviderModelCache {
-                config_fingerprint: provider.routing_fingerprint().unwrap(),
+                config_fingerprint: provider_x_providers::resolve_provider(provider)
+                    .routing_fingerprint()
+                    .unwrap(),
                 last_successful_refresh_at: "now".to_owned(),
                 source: ProviderModelSource {
                     protocol: ProtocolId::OpenaiResponses,
@@ -286,6 +294,38 @@ mod tests {
                 .values()
                 .all(|source| *source == provider_x_core::MetadataSource::ModelRegistry)
         );
+    }
+
+    #[test]
+    fn dedicated_provider_uses_its_models_dev_id_instead_of_instance_namespace() {
+        let mut provider = provider("deepseek-secondary");
+        provider.kind = provider_x_core::ProviderKind::DeepSeek;
+        let mut preview = preview(&provider);
+        preview.cache.models[0].upstream_model_id =
+            provider_x_core::ModelId::new("deepseek-v4-pro").unwrap();
+        let matched = apply_registry_suggestions(
+            &provider,
+            &mut preview,
+            &cache(json!({
+                "deepseek": {
+                    "id": "deepseek",
+                    "models": {
+                        "deepseek-v4-pro": {
+                            "id": "deepseek-v4-pro",
+                            "name": "DeepSeek V4 Pro",
+                            "limit": {"context": 128_000}
+                        }
+                    }
+                }
+            })),
+        )
+        .unwrap();
+
+        assert_eq!(
+            matched,
+            vec![provider_x_core::ModelId::new("deepseek-v4-pro").unwrap()]
+        );
+        assert_eq!(preview.cache.models[0].display_name, "DeepSeek V4 Pro");
     }
 
     #[test]

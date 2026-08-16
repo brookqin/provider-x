@@ -14,11 +14,12 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use protocol_openai_responses::{
-    ResponsesWebSocketPlan, WebSocketMessageKind, classify_ws_text, inspect_ws_text,
-    is_terminal_ws_event, rewrite_ws_text, websocket_error_event, websocket_ingress_plan,
+    WebSocketMessageKind, classify_ws_text, inspect_ws_text, is_terminal_ws_event,
+    websocket_error_event,
 };
-use provider_x_core::{ProtocolId, ProviderId, RouteDecision};
+use provider_x_core::{ProviderId, RouteDecision};
 use provider_x_network::{NetworkConnector, NetworkWebSocket, connect_websocket};
+use provider_x_providers::WebSocketPlan;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, watch};
 use tokio_tungstenite::{
@@ -463,29 +464,8 @@ fn prepare_first_message(
             let provider = runtime
                 .provider(&provider_id)
                 .ok_or(WebSocketProxyError::ProviderNotAvailable)?;
-            if matches!(
-                provider.config.protocol,
-                ProtocolId::OpenaiChatCompletions | ProtocolId::AnthropicMessages
-            ) {
-                if !provider.config.transports.http_sse {
-                    return Err(WebSocketProxyError::TransportNotSupported);
-                }
-                return Ok(PreparedFirstMessage {
-                    runtime: Arc::clone(&runtime),
-                    route: SessionRoute::ThirdParty(provider_id),
-                    observed_route,
-                    codex_turn_metadata_header_present,
-                    upstream: PreparedUpstream::HttpBridge {
-                        provider: Box::new(provider.clone()),
-                        upstream_model: upstream_model_id.to_string(),
-                        first_text: text.to_string(),
-                    },
-                });
-            }
-            let transport_plan = websocket_ingress_plan(&provider.config.transports)
-                .ok_or(WebSocketProxyError::TransportNotSupported)?;
-            match transport_plan {
-                ResponsesWebSocketPlan::BridgeToHttpSse => Ok(PreparedFirstMessage {
+            match provider.profile.websocket_plan() {
+                WebSocketPlan::HttpBridge(_) => Ok(PreparedFirstMessage {
                     runtime: Arc::clone(&runtime),
                     route: SessionRoute::ThirdParty(provider_id),
                     observed_route,
@@ -496,14 +476,15 @@ fn prepare_first_message(
                         first_text: text.to_string(),
                     },
                 }),
-                ResponsesWebSocketPlan::DirectWebSocket => {
+                WebSocketPlan::Direct => {
                     let upstream_url = provider
-                        .config
-                        .endpoints
-                        .websocket
-                        .clone()
+                        .profile
+                        .websocket_endpoint()
+                        .map(str::to_owned)
                         .ok_or(WebSocketProxyError::TransportNotSupported)?;
-                    let rewritten = rewrite_ws_text(text.as_ref(), upstream_model_id.as_str())
+                    let rewritten = provider
+                        .profile
+                        .rewrite_websocket_request(text.as_ref(), upstream_model_id.as_str())
                         .map_err(|_| WebSocketProxyError::InvalidFirstMessage)?;
                     Ok(PreparedFirstMessage {
                         runtime: Arc::clone(&runtime),
@@ -515,7 +496,7 @@ fn prepare_first_message(
                             headers: third_party_websocket_headers(
                                 request_headers,
                                 &provider.config.auth,
-                                provider.config.protocol,
+                                &provider.profile,
                             )
                             .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?,
                             message: Message::text(rewritten),
@@ -523,6 +504,7 @@ fn prepare_first_message(
                         },
                     })
                 }
+                WebSocketPlan::Unsupported => Err(WebSocketProxyError::TransportNotSupported),
             }
         }
     }
@@ -712,11 +694,13 @@ fn prepare_followup_message(
                 provider_id,
                 upstream_model_id,
             },
-        ) if current_provider == &provider_id => {
-            rewrite_ws_text(text.as_ref(), upstream_model_id.as_str())
-                .map(Message::text)
-                .map_err(|_| WebSocketProxyError::InvalidFirstMessage)
-        }
+        ) if current_provider == &provider_id => runtime
+            .provider(current_provider)
+            .ok_or(WebSocketProxyError::ProviderNotAvailable)?
+            .profile
+            .rewrite_websocket_request(text.as_ref(), upstream_model_id.as_str())
+            .map(Message::text)
+            .map_err(|_| WebSocketProxyError::InvalidFirstMessage),
         (_, RouteDecision::UnavailableManagedModel) => Err(WebSocketProxyError::ModelNotAvailable),
         _ => Err(WebSocketProxyError::RouteChanged),
     }

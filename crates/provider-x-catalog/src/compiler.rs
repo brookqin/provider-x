@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use provider_x_core::{ModelCacheDocument, ModelPublicationStatus, ProvidersDocument};
+use provider_x_providers::{resolve_provider, validate_document};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -31,7 +32,7 @@ impl CatalogOverlay {
         providers: &ProvidersDocument,
         cache: &ModelCacheDocument,
     ) -> Result<Self, CatalogError> {
-        providers.validate()?;
+        validate_document(providers)?;
         cache.validate()?;
         let mut slugs = BTreeSet::new();
         let mut third_party = Vec::new();
@@ -45,7 +46,9 @@ impl CatalogOverlay {
                     provider_id: provider.id.to_string(),
                 }
             })?;
-            if provider_cache.config_fingerprint != provider.routing_fingerprint()? {
+            if !resolve_provider(provider)
+                .matches_cache_fingerprint(provider, &provider_cache.config_fingerprint)?
+            {
                 return Err(provider_x_core::CoreError::StaleModelCache {
                     provider_id: provider.id.to_string(),
                 }
@@ -266,6 +269,7 @@ mod tests {
             name: "Provider A".to_owned(),
             description: None,
             enabled: true,
+            kind: provider_x_core::ProviderKind::Custom,
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
             endpoints: EndpointConfig {
@@ -283,7 +287,9 @@ mod tests {
         };
         let model_id = ModelId::new("coder").unwrap();
         let cache = ProviderModelCache {
-            config_fingerprint: provider.routing_fingerprint().unwrap(),
+            config_fingerprint: provider_x_providers::resolve_provider(&provider)
+                .routing_fingerprint()
+                .unwrap(),
             last_successful_refresh_at: "2026-08-12T00:00:00Z".to_owned(),
             source: ProviderModelSource {
                 protocol: ProtocolId::OpenaiResponses,
@@ -306,7 +312,7 @@ mod tests {
         };
         (
             ProvidersDocument {
-                schema_version: 1,
+                schema_version: provider_x_core::SCHEMA_VERSION,
                 listener: ListenerConfig {
                     host: "127.0.0.1".to_owned(),
                     port: 43119,

@@ -1,5 +1,5 @@
 [package]
-name = "provider-x-catalog"
+name = "provider-x-providers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,20 +8,15 @@ license.workspace = true
 [dependencies]
 bytes.workspace = true
 hex.workspace = true
-http-body-util.workspace = true
 hyper.workspace = true
-hyper-util.workspace = true
 provider-x-core = { path = "../provider-x-core" }
-provider-x-network = { path = "../provider-x-network" }
-provider-x-providers = { path = "../provider-x-providers" }
+protocol-anthropic-messages = { path = "../protocol-anthropic-messages" }
+protocol-openai-chat-completions = { path = "../protocol-openai-chat-completions" }
+protocol-openai-responses = { path = "../protocol-openai-responses" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-
-[dev-dependencies]
-tokio.workspace = true
 
 [lints]
 workspace = true

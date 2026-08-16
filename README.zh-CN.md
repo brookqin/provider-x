@@ -25,7 +25,7 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 - 对不支持原生 WebSocket 的供应商，将 Codex WebSocket 会话桥接至 HTTP/SSE。
 - 将 Responses 请求、流式事件、工具调用和有界会话历史适配至 OpenAI Chat Completions 供应商。
 - 将 Responses 请求与流式事件适配至 Anthropic Messages，包括带签名的思考块和有状态工具续接。
-- 由用户主动刷新供应商模型，并使用 [models.dev](https://models.dev/) 的精确匹配结果补充缺失元数据。
+- 由用户主动刷新供应商模型，并将专用厂商实现映射到 [models.dev](https://models.dev/) 的厂商 ID，以精确匹配结果补充缺失元数据。
 - 通过原生 GPUI 设置窗口管理供应商、模型可见性与能力、Codex 集成、开机运行以及英文或简体中文界面。
 - 上游连接支持 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
 - 将脱敏后的运行错误和接口请求错误写入按天轮换的本机私有日志，并只保留 10 天。
@@ -103,19 +103,14 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 
 1. 启动 ProviderX，从菜单栏项目中选择 **打开设置**。
 2. 选择 **新增供应商**。
-3. 选择供应商模板或 **自定义**，然后填写名称、上游协议、HTTP 地址、可选 WebSocket 地址、传输能力和 API Key。
+3. 选择供应商模板或 **自定义**。专用模板只需填写名称和 API Key；自定义供应商还需选择上游协议并填写 HTTP 地址及可选 WebSocket 地址。
 4. 刷新模型列表，并按需检查模型名称及可选能力元数据。
 5. 保存并启用供应商。
 6. 打开 **全局设置**，启用 **Codex / ChatGPT Desktop 集成**。
 7. 完整退出并重新启动 ChatGPT Desktop，然后选择类似 `provider-id/model-id` 的命名空间模型。
 
-DeepSeek 使用 Anthropic Messages 时请选择 **Anthropic Messages**。DeepSeek 模板会将 HTTP
-基址设置为 `https://api.deepseek.com/anthropic`；ProviderX 自动追加 `/v1/messages`，以
-`x-api-key` 发送当前配置的密钥，并始终保持密钥私有。模型刷新则通过模板内的类型化模型
-列表地址继续使用 DeepSeek 兼容的 `/models` 接口。模板同时设置
-`anthropic_thinking: enabled`：普通请求与工具续接都会保持思考模式，并原样回传带签名的
-思考块。强制工具选择与思考模式冲突时，ProviderX 会保持思考开启，将工具要求转换为明确
-指令并使用自动工具选择，不会为了强制调用而关闭思考。
+专用厂商模板内置推荐协议、官方端点、模型发现方式以及对应的 models.dev 厂商 ID，不提供
+协议和端点选择。需要使用其他兼容协议或非标准端点时，请创建自定义供应商。
 
 自定义 Anthropic 供应商默认使用 `anthropic_thinking: adaptive`，以兼容当前 Claude 模型；
 实现旧式手动扩展思考的兼容接口可以在供应商文档中明确设置为 `enabled`。

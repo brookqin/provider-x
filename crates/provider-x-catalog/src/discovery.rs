@@ -4,16 +4,12 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Limited};
 use hyper::{
     Method, Request, StatusCode,
-    header::{
-        ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, ETAG, HeaderValue, IF_NONE_MATCH, USER_AGENT,
-    },
+    header::{ACCEPT, ACCEPT_ENCODING, ETAG, HeaderValue, IF_NONE_MATCH, USER_AGENT},
 };
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
-use provider_x_core::DiscoveredModel;
-use provider_x_core::{
-    AuthConfig, ProtocolId, ProviderConfig, ProviderModelCache, ProxyEnvironment,
-};
+use provider_x_core::{DiscoveredModel, ProviderConfig, ProviderModelCache, ProxyEnvironment};
 use provider_x_network::{NetworkConnector, build_http_connector};
+use provider_x_providers::{resolve_provider, validate_provider};
 
 use crate::{
     CatalogError, MODEL_REGISTRY_SCHEMA_VERSION, MODEL_REGISTRY_URL, ModelRegistryCache,
@@ -73,39 +69,9 @@ impl ManualDiscoveryClient {
         &self,
         provider: &ProviderConfig,
     ) -> Result<Vec<DiscoveredModel>, CatalogError> {
-        provider.validate()?;
-        match provider.protocol {
-            ProtocolId::OpenaiResponses => {
-                self.discover_protocol_models(
-                    provider,
-                    provider.endpoints.models.clone().unwrap_or_else(|| {
-                        protocol_openai_responses::model_list_url(&provider.endpoints.http)
-                    }),
-                    protocol_openai_responses::parse_model_list,
-                )
-                .await
-            }
-            ProtocolId::OpenaiChatCompletions => {
-                self.discover_protocol_models(
-                    provider,
-                    provider.endpoints.models.clone().unwrap_or_else(|| {
-                        protocol_openai_chat_completions::model_list_url(&provider.endpoints.http)
-                    }),
-                    protocol_openai_chat_completions::parse_model_list,
-                )
-                .await
-            }
-            ProtocolId::AnthropicMessages => {
-                self.discover_protocol_models(
-                    provider,
-                    provider.endpoints.models.clone().unwrap_or_else(|| {
-                        protocol_anthropic_messages::model_list_url(&provider.endpoints.http)
-                    }),
-                    protocol_anthropic_messages::parse_model_list,
-                )
-                .await
-            }
-        }
+        validate_provider(provider)?;
+        let profile = resolve_provider(provider);
+        self.discover_provider_models(provider, &profile).await
     }
 
     /// Discovers models and builds a cache preview without mutating the previous cache.
@@ -163,40 +129,20 @@ impl ManualDiscoveryClient {
         }
     }
 
-    async fn discover_protocol_models<E>(
+    async fn discover_provider_models(
         &self,
         provider: &ProviderConfig,
-        model_list_url: String,
-        parse_model_list: fn(&[u8]) -> Result<Vec<DiscoveredModel>, E>,
-    ) -> Result<Vec<DiscoveredModel>, CatalogError>
-    where
-        E: Into<CatalogError>,
-    {
+        profile: &provider_x_providers::ProviderProfile,
+    ) -> Result<Vec<DiscoveredModel>, CatalogError> {
         let mut request = Request::builder()
             .method(Method::GET)
-            .uri(model_list_url)
+            .uri(profile.model_list_url())
             .header(ACCEPT, "application/json")
             .header(ACCEPT_ENCODING, "identity")
-            .header(USER_AGENT, "provider-x/0.1");
-        match &provider.auth {
-            AuthConfig::Bearer { api_key }
-                if provider.protocol == ProtocolId::AnthropicMessages =>
-            {
-                let api_key =
-                    HeaderValue::from_str(api_key).map_err(|_| CatalogError::DiscoveryRequest)?;
-                request = request
-                    .header("x-api-key", api_key)
-                    .header("anthropic-version", "2023-06-01");
-            }
-            AuthConfig::Bearer { api_key } => {
-                let authorization = HeaderValue::from_str(&format!("Bearer {api_key}"))
-                    .map_err(|_| CatalogError::DiscoveryRequest)?;
-                request = request.header(AUTHORIZATION, authorization);
-            }
-        }
-        let request = request
+            .header(USER_AGENT, "provider-x/0.1")
             .body(Empty::new())
             .map_err(|_| CatalogError::DiscoveryRequest)?;
+        profile.apply_authentication(&provider.auth, request.headers_mut())?;
         let response = tokio::time::timeout(self.response_timeout, self.client.request(request))
             .await
             .map_err(|_| CatalogError::DiscoveryTimeout)?
@@ -210,7 +156,7 @@ impl ManualDiscoveryClient {
             .map_err(|_| CatalogError::DiscoveryTimeout)?
             .map_err(|_| CatalogError::DiscoveryBodyTooLarge(self.response_body_limit_bytes))?
             .to_bytes();
-        parse_model_list(&body).map_err(Into::into)
+        profile.parse_model_list(&body).map_err(Into::into)
     }
 
     async fn fetch_model_registry(
@@ -301,6 +247,7 @@ mod tests {
             name: "Provider A".to_owned(),
             description: None,
             enabled: false,
+            kind: provider_x_core::ProviderKind::Custom,
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
             endpoints: EndpointConfig {

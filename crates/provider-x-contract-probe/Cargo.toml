@@ -14,6 +14,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 provider-x-core = { path = "../provider-x-core" }
 provider-x-egress = { path = "../provider-x-egress" }
+provider-x-providers = { path = "../provider-x-providers" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

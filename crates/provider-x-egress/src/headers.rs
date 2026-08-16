@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use hyper::{HeaderMap, header, header::HeaderValue};
-use provider_x_core::{AuthConfig, ProtocolId};
+use provider_x_core::AuthConfig;
+use provider_x_providers::ProviderProfile;
 
 use crate::ProxyError;
 
@@ -34,7 +35,7 @@ pub(crate) fn official_model_catalog_headers(source: &HeaderMap) -> HeaderMap {
 pub(crate) fn third_party_request_headers(
     source: &HeaderMap,
     auth: &AuthConfig,
-    protocol: ProtocolId,
+    profile: &ProviderProfile,
 ) -> Result<HeaderMap, ProxyError> {
     let connection_headers = connection_headers(source);
     let mut destination: HeaderMap = source
@@ -52,19 +53,9 @@ pub(crate) fn third_party_request_headers(
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
 
-    match auth {
-        AuthConfig::Bearer { api_key } => {
-            if protocol == ProtocolId::AnthropicMessages {
-                let value = HeaderValue::from_str(api_key).map_err(|_| ProxyError::RequestBuild)?;
-                destination.insert("x-api-key", value);
-                destination.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-            } else {
-                let value = format!("Bearer {api_key}");
-                let value = HeaderValue::from_str(&value).map_err(|_| ProxyError::RequestBuild)?;
-                destination.insert(header::AUTHORIZATION, value);
-            }
-        }
-    }
+    profile
+        .apply_authentication(auth, &mut destination)
+        .map_err(|_| ProxyError::RequestBuild)?;
     Ok(destination)
 }
 
@@ -103,9 +94,9 @@ pub(crate) fn official_websocket_headers(source: &HeaderMap) -> HeaderMap {
 pub(crate) fn third_party_websocket_headers(
     source: &HeaderMap,
     auth: &AuthConfig,
-    protocol: ProtocolId,
+    profile: &ProviderProfile,
 ) -> Result<HeaderMap, ProxyError> {
-    let mut headers = third_party_request_headers(source, auth, protocol)?;
+    let mut headers = third_party_request_headers(source, auth, profile)?;
     remove_websocket_handshake_headers(&mut headers);
     Ok(headers)
 }
@@ -160,12 +151,40 @@ fn is_sensitive_official_header(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use hyper::{HeaderMap, header::HeaderValue};
-    use provider_x_core::{AuthConfig, ProtocolId};
+    use provider_x_core::{
+        AuthConfig, EndpointConfig, ProtocolId, ProviderConfig, ProviderId, ProviderKind,
+        TransportConfig,
+    };
+    use provider_x_providers::resolve_provider;
 
     use super::{
         official_model_catalog_headers, official_request_headers, rewritten_response_headers,
         third_party_request_headers,
     };
+
+    fn profile(protocol: ProtocolId) -> provider_x_providers::ProviderProfile {
+        resolve_provider(&ProviderConfig {
+            id: ProviderId::new("test").unwrap(),
+            name: "Test".to_owned(),
+            description: None,
+            enabled: true,
+            kind: ProviderKind::Custom,
+            protocol,
+            anthropic_thinking: None,
+            endpoints: EndpointConfig {
+                http: "https://example.com/v1".to_owned(),
+                websocket: None,
+                models: None,
+            },
+            auth: AuthConfig::Bearer {
+                api_key: "unused".to_owned(),
+            },
+            transports: TransportConfig {
+                http_sse: true,
+                websocket: false,
+            },
+        })
+    }
 
     #[test]
     fn official_preserves_auth_but_removes_hop_by_hop_headers() {
@@ -195,7 +214,7 @@ mod tests {
             &AuthConfig::Bearer {
                 api_key: "third-party".to_owned(),
             },
-            ProtocolId::OpenaiChatCompletions,
+            &profile(ProtocolId::OpenaiChatCompletions),
         )
         .unwrap();
         assert_eq!(result["authorization"], "Bearer third-party");
@@ -214,7 +233,7 @@ mod tests {
             &AuthConfig::Bearer {
                 api_key: "anthropic-secret".to_owned(),
             },
-            ProtocolId::AnthropicMessages,
+            &profile(ProtocolId::AnthropicMessages),
         )
         .unwrap();
         assert!(!result.contains_key("authorization"));

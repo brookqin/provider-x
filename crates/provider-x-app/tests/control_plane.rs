@@ -5,11 +5,11 @@ use provider_x_catalog::RefreshPreview;
 use provider_x_core::{
     AuthConfig, CatalogModelId, EndpointConfig, MetadataSource, ModelId, ModelPublicationStatus,
     ProtocolId, ProviderConfig, ProviderId, ProviderModelCache, ProviderModelSource,
-    ProviderModelSpec, RouteDecision, RouteResolver, RuntimeSnapshot, TransportConfig,
+    ProviderModelSpec, RouteDecision, RouteResolver, TransportConfig,
 };
 
 fn resolve(control: &ControlPlane, model: &str) -> RouteDecision {
-    RuntimeSnapshot::build(control.providers(), control.cache())
+    provider_x_providers::build_runtime_snapshot(control.providers(), control.cache())
         .unwrap()
         .resolve(model)
 }
@@ -20,6 +20,7 @@ fn provider() -> ProviderConfig {
         name: "Provider A".to_owned(),
         description: None,
         enabled: false,
+        kind: provider_x_core::ProviderKind::Custom,
         protocol: ProtocolId::OpenaiResponses,
         anthropic_thinking: None,
         endpoints: EndpointConfig {
@@ -41,7 +42,9 @@ fn preview(provider: &ProviderConfig) -> RefreshPreview {
     let upstream = ModelId::new("coder").unwrap();
     RefreshPreview {
         cache: ProviderModelCache {
-            config_fingerprint: provider.routing_fingerprint().unwrap(),
+            config_fingerprint: provider_x_providers::resolve_provider(provider)
+                .routing_fingerprint()
+                .unwrap(),
             last_successful_refresh_at: "2026-08-12T12:00:00Z".to_owned(),
             source: ProviderModelSource {
                 protocol: provider.protocol,

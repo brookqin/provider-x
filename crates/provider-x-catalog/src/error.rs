@@ -6,13 +6,7 @@ pub enum CatalogError {
     Core(#[from] provider_x_core::CoreError),
 
     #[error(transparent)]
-    Protocol(#[from] protocol_openai_responses::ProtocolError),
-
-    #[error(transparent)]
-    ChatProtocol(#[from] protocol_openai_chat_completions::ChatProtocolError),
-
-    #[error(transparent)]
-    AnthropicProtocol(#[from] protocol_anthropic_messages::AnthropicProtocolError),
+    Provider(#[from] provider_x_providers::ProviderError),
 
     #[error(transparent)]
     ProxyConfiguration(#[from] provider_x_network::ProxyConfigurationError),

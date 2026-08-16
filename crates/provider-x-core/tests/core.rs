@@ -48,6 +48,7 @@ fn provider(id: &str, enabled: bool) -> ProviderConfig {
         name: id.to_owned(),
         description: None,
         enabled,
+        kind: provider_x_core::ProviderKind::Custom,
         protocol: ProtocolId::OpenaiResponses,
         anthropic_thinking: None,
         endpoints: EndpointConfig {
@@ -67,7 +68,7 @@ fn provider(id: &str, enabled: bool) -> ProviderConfig {
 
 fn document(providers: Vec<ProviderConfig>) -> ProvidersDocument {
     ProvidersDocument {
-        schema_version: 1,
+        schema_version: provider_x_core::SCHEMA_VERSION,
         listener: ListenerConfig {
             host: "127.0.0.1".to_owned(),
             port: 43119,
@@ -286,6 +287,79 @@ fn provider_yaml_round_trip_validates_typed_ids() {
     let invalid = PROVIDERS_YAML.replace("compatible-primary", "INVALID/provider");
     let error = ProvidersDocument::from_yaml(&invalid).unwrap_err();
     assert!(error.to_string().contains("invalid provider id"));
+}
+
+#[test]
+fn legacy_deepseek_responses_config_migrates_to_the_dedicated_provider() {
+    let legacy = PROVIDERS_YAML
+        .replace("compatible-primary", "deepseek")
+        .replace("Compatible Primary", "DeepSeek")
+        .replace("https://gateway.example.com/v1", "https://api.deepseek.com");
+    let parsed = ProvidersDocument::from_yaml(&legacy).unwrap();
+
+    assert_eq!(
+        parsed.providers[0].kind,
+        provider_x_core::ProviderKind::DeepSeek
+    );
+
+    let legacy_chat = legacy.replace("openai_responses", "openai_chat_completions");
+    let parsed_chat = ProvidersDocument::from_yaml(&legacy_chat).unwrap();
+    assert_eq!(
+        parsed_chat.providers[0].kind,
+        provider_x_core::ProviderKind::Custom
+    );
+
+    let legacy_custom_models = legacy.replace(
+        "      websocket: null",
+        "      websocket: null\n      models: https://gateway.example.com/models",
+    );
+    let parsed_custom_models = ProvidersDocument::from_yaml(&legacy_custom_models).unwrap();
+    assert_eq!(
+        parsed_custom_models.providers[0].kind,
+        provider_x_core::ProviderKind::Custom
+    );
+}
+
+#[test]
+fn explicit_deepseek_kind_uses_the_models_dev_identifier_spelling() {
+    let yaml = PROVIDERS_YAML
+        .replace("schema_version: 1", "schema_version: 2")
+        .replace(
+            "    protocol: openai_responses",
+            "    kind: deepseek\n    protocol: openai_responses",
+        );
+    let parsed = ProvidersDocument::from_yaml(&yaml).unwrap();
+
+    assert_eq!(
+        parsed.providers[0].kind,
+        provider_x_core::ProviderKind::DeepSeek
+    );
+}
+
+#[test]
+fn schema_two_preserves_explicit_custom_for_a_canonical_deepseek_endpoint() {
+    let yaml = PROVIDERS_YAML
+        .replace("schema_version: 1", "schema_version: 2")
+        .replace("compatible-primary", "deepseek")
+        .replace("https://gateway.example.com/v1", "https://api.deepseek.com")
+        .replace(
+            "    protocol: openai_responses",
+            "    kind: custom\n    protocol: openai_responses",
+        );
+    let parsed = ProvidersDocument::from_yaml(&yaml).unwrap();
+
+    assert_eq!(
+        parsed.providers[0].kind,
+        provider_x_core::ProviderKind::Custom
+    );
+}
+
+#[test]
+fn schema_two_requires_an_explicit_provider_kind() {
+    let yaml = PROVIDERS_YAML.replace("schema_version: 1", "schema_version: 2");
+    let error = ProvidersDocument::from_yaml(&yaml).unwrap_err();
+
+    assert!(error.to_string().contains("missing field `kind`"));
 }
 
 #[test]

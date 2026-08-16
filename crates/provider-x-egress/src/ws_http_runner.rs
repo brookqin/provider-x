@@ -206,15 +206,14 @@ async fn request_http<A: WsHttpProtocolAdapter>(
     state: &EgressState,
     shutdown: &mut watch::Receiver<WebSocketShutdown>,
 ) -> Result<WsHttpStreamOutcome<A::Commit>, WebSocketProxyError> {
-    let uri: hyper::Uri = A::upstream_url(&provider.config.endpoints.http)
+    let uri: hyper::Uri = provider
+        .profile
+        .websocket_http_url()
         .parse()
         .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?;
-    let mut headers = third_party_request_headers(
-        source_headers,
-        &provider.config.auth,
-        provider.config.protocol,
-    )
-    .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?;
+    let mut headers =
+        third_party_request_headers(source_headers, &provider.config.auth, &provider.profile)
+            .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?;
     let websocket_headers: Vec<_> = headers
         .keys()
         .filter(|name| name.as_str().starts_with("sec-websocket-"))

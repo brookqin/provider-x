@@ -23,7 +23,10 @@ use provider_x_catalog::{
 };
 use provider_x_core::{
     AnthropicThinkingMode, AuthConfig, EndpointConfig, ModelId, ModelPublicationStatus, ProtocolId,
-    ProviderConfig, ProviderId, ProviderModelSpec, TransportConfig,
+    ProviderConfig, ProviderId, ProviderKind, ProviderModelSpec, TransportConfig,
+};
+use provider_x_providers::{
+    PROVIDER_DEFINITIONS, provider_definition, resolve_provider, validate_provider,
 };
 
 use crate::codex_config::{CodexConfigStatus, ReceiptPhase};
@@ -40,7 +43,6 @@ use crate::{control_plane::AppPaths, storage::SingleInstanceGuard};
 const TRAY_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const DISCOVERY_BODY_LIMIT: usize = 8 * 1024 * 1024;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-const DEEPSEEK_PROVIDER: &str = "DeepSeek";
 const RESPONSES_PROTOCOL: &str = "Responses";
 const CHAT_COMPLETIONS_PROTOCOL: &str = "Chat Completions";
 const ANTHROPIC_MESSAGES_PROTOCOL: &str = "Anthropic Messages";
@@ -551,7 +553,7 @@ struct SettingsView {
     websocket_enabled: bool,
     model_parallel_tools: bool,
     model_search_tool: bool,
-    provider_template: ProviderTemplate,
+    provider_template: ProviderKind,
     providers: Vec<ProviderSummary>,
     selected_page: SettingsPage,
     editing_provider: Option<ProviderId>,
@@ -602,13 +604,6 @@ enum ApiKeyVisibility {
     Visible,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ProviderTemplate {
-    #[default]
-    DeepSeek,
-    Custom,
-}
-
 impl SettingsView {
     fn new(
         services: AppServices,
@@ -629,10 +624,8 @@ impl SettingsView {
                 let SelectEvent::Confirm(Some(provider)) = event else {
                     return;
                 };
-                if provider == DEEPSEEK_PROVIDER {
-                    view.apply_deepseek_template(window, cx);
-                } else {
-                    view.apply_custom_template(window, cx);
+                if let Some(kind) = provider_kind_from_label(provider) {
+                    view.apply_provider_template(kind, window, cx);
                 }
             },
         );
@@ -693,7 +686,7 @@ impl SettingsView {
             websocket_enabled: false,
             model_parallel_tools: false,
             model_search_tool: false,
-            provider_template: ProviderTemplate::DeepSeek,
+            provider_template: ProviderKind::DeepSeek,
             providers,
             selected_page: SettingsPage::Global,
             editing_provider: None,
@@ -714,7 +707,7 @@ impl SettingsView {
     fn apply_protocol_selection(
         &mut self,
         protocol: &str,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.protocol = match protocol {
@@ -724,15 +717,6 @@ impl SettingsView {
         };
         if self.protocol != ProtocolId::OpenaiResponses {
             self.websocket_enabled = false;
-        }
-        if self.provider_template == ProviderTemplate::DeepSeek {
-            let endpoint = if self.protocol == ProtocolId::AnthropicMessages {
-                "https://api.deepseek.com/anthropic"
-            } else {
-                "https://api.deepseek.com"
-            };
-            self.http_url
-                .update(cx, |input, cx| input.set_value(endpoint, window, cx));
         }
         self.preview = None;
         cx.notify();
@@ -804,49 +788,44 @@ impl SettingsView {
         self.tray.set_codex_enabled(self.codex_integration.enabled);
     }
 
-    fn apply_deepseek_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.provider_template = ProviderTemplate::DeepSeek;
+    fn apply_provider_template(
+        &mut self,
+        kind: ProviderKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.provider_template = kind;
         if self.editing_provider.is_some() {
             return;
         }
-        self.provider_name
-            .update(cx, |input, cx| input.set_value("DeepSeek", window, cx));
-        self.http_url.update(cx, |input, cx| {
-            input.set_value("https://api.deepseek.com", window, cx);
-        });
-        self.websocket_url
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.protocol = ProtocolId::OpenaiChatCompletions;
-        self.protocol_select.update(cx, |select, cx| {
-            select.set_selected_value(&CHAT_COMPLETIONS_PROTOCOL, window, cx);
-        });
-        self.websocket_enabled = false;
-        self.preview = None;
-        self.operation = OperationState::Idle;
-        cx.notify();
-    }
-
-    fn apply_custom_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.provider_template = ProviderTemplate::Custom;
-        if self.editing_provider.is_some() {
-            return;
+        let definition = provider_definition(kind);
+        if definition.configurable {
+            for input in [
+                &self.provider_name,
+                &self.http_url,
+                &self.websocket_url,
+                &self.api_key,
+            ] {
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            }
+            self.api_key
+                .update(cx, |input, cx| input.set_masked(true, window, cx));
+            self.api_key_visibility = ApiKeyVisibility::Hidden;
+        } else {
+            self.provider_name.update(cx, |input, cx| {
+                input.set_value(definition.display_name, window, cx);
+            });
+            self.http_url.update(cx, |input, cx| {
+                input.set_value(definition.http_endpoint, window, cx);
+            });
+            self.websocket_url
+                .update(cx, |input, cx| input.set_value("", window, cx));
         }
-        for input in [
-            &self.provider_name,
-            &self.http_url,
-            &self.websocket_url,
-            &self.api_key,
-        ] {
-            input.update(cx, |input, cx| input.set_value("", window, cx));
-        }
-        self.api_key
-            .update(cx, |input, cx| input.set_masked(true, window, cx));
-        self.api_key_visibility = ApiKeyVisibility::Hidden;
-        self.protocol = ProtocolId::OpenaiResponses;
+        self.protocol = definition.protocol;
         self.protocol_select.update(cx, |select, cx| {
-            select.set_selected_value(&RESPONSES_PROTOCOL, window, cx);
+            select.set_selected_value(&protocol_label(definition.protocol), window, cx);
         });
-        self.websocket_enabled = false;
+        self.websocket_enabled = definition.websocket;
         self.preview = None;
         self.operation = OperationState::Idle;
         cx.notify();
@@ -858,9 +837,11 @@ impl SettingsView {
         let id = if let Some(editing) = self.editing_provider.as_ref() {
             editing.clone()
         } else {
-            let base = match self.provider_template {
-                ProviderTemplate::DeepSeek => "deepseek".to_owned(),
-                ProviderTemplate::Custom => provider_namespace_from_name(&name)?,
+            let definition = provider_definition(self.provider_template);
+            let base = if definition.configurable {
+                provider_namespace_from_name(&name)?
+            } else {
+                definition.default_namespace.to_owned()
             };
             ProviderId::new(next_available_provider_id(
                 &base,
@@ -895,38 +876,48 @@ impl SettingsView {
             api_key: entered_api_key,
         };
         let enabled = existing.as_ref().is_some_and(|provider| provider.enabled);
-        let anthropic_thinking = (self.protocol == ProtocolId::AnthropicMessages).then(|| {
+        let kind = self.provider_template;
+        let definition = provider_definition(kind);
+        let protocol = if definition.configurable {
+            self.protocol
+        } else {
+            definition.protocol
+        };
+        let anthropic_thinking = (protocol == ProtocolId::AnthropicMessages).then(|| {
             existing
                 .as_ref()
                 .and_then(|provider| provider.anthropic_thinking)
-                .unwrap_or(if self.provider_template == ProviderTemplate::DeepSeek {
-                    AnthropicThinkingMode::Enabled
-                } else {
-                    AnthropicThinkingMode::Adaptive
-                })
+                .unwrap_or(AnthropicThinkingMode::Adaptive)
         });
         let provider = ProviderConfig {
             id,
             name,
             description: None,
             enabled,
-            protocol: self.protocol,
+            kind,
+            protocol,
             anthropic_thinking,
             endpoints: EndpointConfig {
-                http: self.http_url.read(cx).value().trim().to_owned(),
-                websocket: (self.protocol == ProtocolId::OpenaiResponses
+                http: if definition.configurable {
+                    self.http_url.read(cx).value().trim().to_owned()
+                } else {
+                    definition.http_endpoint.to_owned()
+                },
+                websocket: (definition.configurable
+                    && protocol == ProtocolId::OpenaiResponses
                     && !websocket.trim().is_empty())
                 .then(|| websocket.trim().to_owned()),
-                models: (self.provider_template == ProviderTemplate::DeepSeek)
-                    .then(|| "https://api.deepseek.com/models".to_owned()),
+                models: definition.models_endpoint.map(str::to_owned),
             },
             auth,
             transports: TransportConfig {
                 http_sse: true,
-                websocket: self.protocol == ProtocolId::OpenaiResponses && self.websocket_enabled,
+                websocket: definition.configurable
+                    && protocol == ProtocolId::OpenaiResponses
+                    && self.websocket_enabled,
             },
         };
-        provider.validate()?;
+        validate_provider(&provider)?;
         Ok(provider)
     }
 
@@ -1414,13 +1405,8 @@ impl SettingsView {
             cx.notify();
             return;
         };
-        let template = if provider.id.to_string() == "deepseek"
-            || provider.endpoints.http.contains("api.deepseek.com")
-        {
-            ProviderTemplate::DeepSeek
-        } else {
-            ProviderTemplate::Custom
-        };
+        let profile = resolve_provider(&provider);
+        let template = provider.kind;
         let provider_template = provider_template_label(template);
         self.provider_template = template;
         self.selected_page = SettingsPage::Provider(provider.id.clone());
@@ -1441,12 +1427,12 @@ impl SettingsView {
             input.set_masked(true, window, cx);
         });
         self.api_key_visibility = ApiKeyVisibility::Hidden;
-        self.websocket_enabled = provider.transports.websocket;
-        self.protocol = provider.protocol;
+        self.websocket_enabled = profile.transports().websocket;
+        self.protocol = profile.protocol();
         self.provider_select.update(cx, |select, cx| {
             select.set_selected_value(&provider_template, window, cx);
         });
-        let protocol = match provider.protocol {
+        let protocol = match profile.protocol() {
             ProtocolId::OpenaiResponses => RESPONSES_PROTOCOL,
             ProtocolId::OpenaiChatCompletions => CHAT_COMPLETIONS_PROTOCOL,
             ProtocolId::AnthropicMessages => ANTHROPIC_MESSAGES_PROTOCOL,
@@ -1480,18 +1466,18 @@ impl SettingsView {
         self.api_key_visibility = ApiKeyVisibility::Hidden;
         self.websocket_enabled = false;
         self.provider_select.update(cx, |select, cx| {
-            select.set_selected_value(&DEEPSEEK_PROVIDER.to_owned(), window, cx);
+            select.set_selected_value(&provider_template_label(ProviderKind::DeepSeek), window, cx);
         });
         self.protocol_select.update(cx, |select, cx| {
-            select.set_selected_value(&CHAT_COMPLETIONS_PROTOCOL, window, cx);
+            select.set_selected_value(&RESPONSES_PROTOCOL, window, cx);
         });
-        self.protocol = ProtocolId::OpenaiChatCompletions;
-        self.provider_template = ProviderTemplate::DeepSeek;
+        self.protocol = ProtocolId::OpenaiResponses;
+        self.provider_template = ProviderKind::DeepSeek;
         self.editing_provider = None;
         self.preview = None;
         self.reviewing_model = None;
         self.operation = OperationState::Idle;
-        self.apply_deepseek_template(window, cx);
+        self.apply_provider_template(ProviderKind::DeepSeek, window, cx);
         cx.notify();
     }
 
@@ -2073,18 +2059,24 @@ impl SettingsView {
                 tr!("app.provider.field.name"),
                 Input::new(&self.provider_name),
             ))
-            .child(field("HTTP API URL", Input::new(&self.http_url)))
-            .child(select_field(
-                tr!("app.provider.field.protocol"),
-                Select::new(&self.protocol_select)
-                    .w_full()
-                    .text_size(px(TEXT_SIZE_BODY))
-                    .disabled(busy),
-            ))
-            .child(field(
-                tr!("app.provider.field.websocket_url"),
-                Input::new(&self.websocket_url),
-            ))
+            .when(
+                provider_definition(self.provider_template).configurable,
+                |editor| {
+                    editor
+                        .child(field("HTTP API URL", Input::new(&self.http_url)))
+                        .child(select_field(
+                            tr!("app.provider.field.protocol"),
+                            Select::new(&self.protocol_select)
+                                .w_full()
+                                .text_size(px(TEXT_SIZE_BODY))
+                                .disabled(busy),
+                        ))
+                        .child(field(
+                            tr!("app.provider.field.websocket_url"),
+                            Input::new(&self.websocket_url),
+                        ))
+                },
+            )
             .child(field(
                 "API Key",
                 Input::new(&self.api_key).suffix(
@@ -2115,28 +2107,33 @@ impl SettingsView {
                         })),
                 ),
             ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
+            .when(
+                provider_definition(self.provider_template).configurable,
+                |editor| {
+                    editor.child(
                         div()
-                            .h(px(18.0))
-                            .line_height(px(18.0))
-                            .text_size(px(TEXT_SIZE_BODY))
-                            .font_medium()
-                            .child(tr!("app.provider.field.native_websocket")),
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .h(px(18.0))
+                                    .line_height(px(18.0))
+                                    .text_size(px(TEXT_SIZE_BODY))
+                                    .font_medium()
+                                    .child(tr!("app.provider.field.native_websocket")),
+                            )
+                            .child(
+                                Switch::new("draft-websocket-enabled")
+                                    .checked(self.websocket_enabled)
+                                    .disabled(busy || self.protocol != ProtocolId::OpenaiResponses)
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.websocket_enabled = *checked;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
-                    .child(
-                        Switch::new("draft-websocket-enabled")
-                            .checked(self.websocket_enabled)
-                            .disabled(busy || self.protocol != ProtocolId::OpenaiResponses)
-                            .on_click(cx.listener(|view, checked, _, cx| {
-                                view.websocket_enabled = *checked;
-                                cx.notify();
-                            })),
-                    ),
+                },
             )
     }
 
@@ -2935,13 +2932,33 @@ fn new_protocol_select(
 }
 
 fn provider_template_options() -> Vec<String> {
-    vec![DEEPSEEK_PROVIDER.to_owned(), tr!("app.common.custom")]
+    PROVIDER_DEFINITIONS
+        .iter()
+        .map(|definition| provider_template_label(definition.kind))
+        .collect()
 }
 
-fn provider_template_label(template: ProviderTemplate) -> String {
-    match template {
-        ProviderTemplate::DeepSeek => DEEPSEEK_PROVIDER.to_owned(),
-        ProviderTemplate::Custom => tr!("app.common.custom"),
+fn provider_template_label(kind: ProviderKind) -> String {
+    let definition = provider_definition(kind);
+    if definition.configurable {
+        tr!("app.common.custom")
+    } else {
+        definition.display_name.to_owned()
+    }
+}
+
+fn provider_kind_from_label(label: &str) -> Option<ProviderKind> {
+    PROVIDER_DEFINITIONS
+        .iter()
+        .find(|definition| provider_template_label(definition.kind) == label)
+        .map(|definition| definition.kind)
+}
+
+fn protocol_label(protocol: ProtocolId) -> &'static str {
+    match protocol {
+        ProtocolId::OpenaiResponses => RESPONSES_PROTOCOL,
+        ProtocolId::OpenaiChatCompletions => CHAT_COMPLETIONS_PROTOCOL,
+        ProtocolId::AnthropicMessages => ANTHROPIC_MESSAGES_PROTOCOL,
     }
 }
 

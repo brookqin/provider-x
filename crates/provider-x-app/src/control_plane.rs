@@ -3,8 +3,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 use provider_x_catalog::{CatalogError, CatalogOverlay, RefreshPreview};
 use provider_x_core::{
     CodexConfig, ListenerConfig, ModelCacheDocument, ProviderConfig, ProviderId, ProvidersDocument,
-    RuntimeSnapshot, TimeoutConfig,
+    TimeoutConfig,
 };
+use provider_x_providers::{build_runtime_snapshot, resolve_provider};
 use thiserror::Error;
 
 use crate::storage::{
@@ -89,6 +90,9 @@ pub enum ControlPlaneError {
     #[error(transparent)]
     Core(#[from] provider_x_core::CoreError),
 
+    #[error(transparent)]
+    Provider(#[from] provider_x_providers::ProviderError),
+
     #[error("Provider {0} does not exist")]
     ProviderNotFound(String),
 
@@ -134,7 +138,7 @@ impl ControlPlane {
             }
             Err(error) => return Err(error.into()),
         };
-        RuntimeSnapshot::build(&providers, &cache)?;
+        build_runtime_snapshot(&providers, &cache)?;
         CatalogOverlay::from_documents(&providers, &cache)?;
 
         Ok(Self {
@@ -230,7 +234,9 @@ impl ControlPlane {
     ) -> Result<PreparedControlMutation, ControlPlaneError> {
         let (providers, cache, provider_id, cache_changed) = match mutation {
             ControlMutation::CommitRefresh { provider, preview } => {
-                if preview.cache.config_fingerprint != provider.routing_fingerprint()? {
+                if preview.cache.config_fingerprint
+                    != resolve_provider(&provider).routing_fingerprint()?
+                {
                     return Err(ControlPlaneError::RefreshFingerprintMismatch(
                         provider.id.to_string(),
                     ));
@@ -278,7 +284,7 @@ impl ControlPlane {
             }
         };
 
-        RuntimeSnapshot::build(&providers, &cache)?;
+        build_runtime_snapshot(&providers, &cache)?;
         CatalogOverlay::from_documents(&providers, &cache)?;
         Ok(PreparedControlMutation {
             providers,
@@ -351,7 +357,7 @@ fn upsert_provider(document: &mut ProvidersDocument, provider: ProviderConfig) {
 
 fn default_providers() -> ProvidersDocument {
     ProvidersDocument {
-        schema_version: 1,
+        schema_version: provider_x_core::SCHEMA_VERSION,
         listener: ListenerConfig {
             host: "127.0.0.1".to_owned(),
             port: 43_119,

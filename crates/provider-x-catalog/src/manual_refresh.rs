@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use provider_x_core::{
     CatalogModelId, DiscoveredModel, MetadataSource, ModelId, ModelPublicationStatus,
-    ProviderConfig, ProviderModelCache, ProviderModelSource, ProviderModelSpec,
+    ProviderConfig, ProviderModelCache, ProviderModelSpec,
 };
+use provider_x_providers::{resolve_provider, validate_provider};
 
 use crate::CatalogError;
 
@@ -186,7 +187,7 @@ pub fn build_refresh_preview(
     existing: Option<&ProviderModelCache>,
     refreshed_at: impl Into<String>,
 ) -> Result<RefreshPreview, CatalogError> {
-    provider.validate()?;
+    validate_provider(provider)?;
     let previous = existing
         .map(|cache| {
             cache
@@ -217,25 +218,11 @@ pub fn build_refresh_preview(
         .filter(|model| model.publication_status == ModelPublicationStatus::NeedsReview)
         .map(|model| model.upstream_model_id.clone())
         .collect();
+    let profile = resolve_provider(provider);
     let cache = ProviderModelCache {
-        config_fingerprint: provider.routing_fingerprint()?,
+        config_fingerprint: profile.routing_fingerprint()?,
         last_successful_refresh_at: refreshed_at.into(),
-        source: ProviderModelSource {
-            protocol: provider.protocol,
-            endpoint: provider.endpoints.models.clone().unwrap_or_else(|| {
-                match provider.protocol {
-                    provider_x_core::ProtocolId::OpenaiResponses => {
-                        protocol_openai_responses::model_list_url(&provider.endpoints.http)
-                    }
-                    provider_x_core::ProtocolId::OpenaiChatCompletions => {
-                        protocol_openai_chat_completions::model_list_url(&provider.endpoints.http)
-                    }
-                    provider_x_core::ProtocolId::AnthropicMessages => {
-                        protocol_anthropic_messages::model_list_url(&provider.endpoints.http)
-                    }
-                }
-            }),
-        },
+        source: profile.model_source(),
         models,
     };
 
@@ -375,6 +362,7 @@ mod tests {
             name: "Provider A".to_owned(),
             description: None,
             enabled: false,
+            kind: provider_x_core::ProviderKind::Custom,
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
             endpoints: EndpointConfig {
@@ -467,7 +455,9 @@ mod tests {
             MetadataSource::ProviderModels,
         );
         let old = ProviderModelCache {
-            config_fingerprint: provider.routing_fingerprint().unwrap(),
+            config_fingerprint: provider_x_providers::resolve_provider(&provider)
+                .routing_fingerprint()
+                .unwrap(),
             last_successful_refresh_at: "old".to_owned(),
             source: ProviderModelSource {
                 protocol: ProtocolId::OpenaiResponses,

@@ -3,9 +3,9 @@ use std::{collections::BTreeSet, fmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{CoreError, ProtocolId, ProviderId};
+use crate::{CoreError, ProtocolId, ProviderId, ProviderKind};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListenerConfig {
@@ -91,6 +91,7 @@ pub struct ProviderConfig {
     pub name: String,
     pub description: Option<String>,
     pub enabled: bool,
+    pub kind: ProviderKind,
     pub protocol: ProtocolId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_thinking: Option<AnthropicThinkingMode>,
@@ -210,9 +211,18 @@ impl ProvidersDocument {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid YAML or a configuration that violates the v1 schema.
+    /// Version-one documents are upgraded in memory by assigning an explicit provider kind. A
+    /// version-two document must always state its kind, so `custom` is never confused with an
+    /// absent legacy field.
+    ///
+    /// Returns an error for invalid YAML or a configuration that violates the current schema.
     pub fn from_yaml(yaml: &str) -> Result<Self, CoreError> {
-        let document: Self = yaml_serde::from_str(yaml)
+        let mut value: yaml_serde::Value = yaml_serde::from_str(yaml)
+            .map_err(|error| CoreError::InvalidYaml(error.to_string()))?;
+        if schema_version(&value) == Some(1) {
+            migrate_v1_document(&mut value)?;
+        }
+        let document: Self = yaml_serde::from_value(value)
             .map_err(|error| CoreError::InvalidYaml(error.to_string()))?;
         document.validate()?;
         Ok(document)
@@ -261,6 +271,88 @@ impl ProvidersDocument {
         }
         Ok(())
     }
+}
+
+fn schema_version(value: &yaml_serde::Value) -> Option<u64> {
+    value.as_mapping()?.get("schema_version")?.as_u64()
+}
+
+fn migrate_v1_document(value: &mut yaml_serde::Value) -> Result<(), CoreError> {
+    let document = value
+        .as_mapping_mut()
+        .ok_or_else(|| CoreError::InvalidYaml("provider document must be a mapping".to_owned()))?;
+    document.insert(
+        yaml_serde::Value::String("schema_version".to_owned()),
+        yaml_serde::Value::Number(SCHEMA_VERSION.into()),
+    );
+    let providers = document
+        .get_mut("providers")
+        .and_then(yaml_serde::Value::as_sequence_mut)
+        .ok_or_else(|| CoreError::InvalidYaml("providers must be a sequence".to_owned()))?;
+    for provider in providers {
+        let mapping = provider
+            .as_mapping_mut()
+            .ok_or_else(|| CoreError::InvalidYaml("provider must be a mapping".to_owned()))?;
+        let is_legacy_deepseek = mapping.get("id").and_then(yaml_serde::Value::as_str)
+            == Some("deepseek")
+            && mapping.get("protocol").and_then(yaml_serde::Value::as_str)
+                == Some("openai_responses")
+            && mapping
+                .get("endpoints")
+                .and_then(yaml_serde::Value::as_mapping)
+                .and_then(|endpoints| endpoints.get("http"))
+                .and_then(yaml_serde::Value::as_str)
+                .is_some_and(|endpoint| {
+                    endpoint.trim_end_matches('/') == "https://api.deepseek.com"
+                })
+            && mapping
+                .get("endpoints")
+                .and_then(yaml_serde::Value::as_mapping)
+                .and_then(|endpoints| endpoints.get("websocket"))
+                .is_none_or(yaml_serde::Value::is_null)
+            && mapping
+                .get("endpoints")
+                .and_then(yaml_serde::Value::as_mapping)
+                .and_then(|endpoints| endpoints.get("models"))
+                .is_none_or(|models| {
+                    models.is_null() || models.as_str() == Some("https://api.deepseek.com/models")
+                })
+            && mapping
+                .get("transports")
+                .and_then(yaml_serde::Value::as_mapping)
+                .is_some_and(|transports| {
+                    transports
+                        .get("http_sse")
+                        .and_then(yaml_serde::Value::as_bool)
+                        == Some(true)
+                        && transports
+                            .get("websocket")
+                            .and_then(yaml_serde::Value::as_bool)
+                            == Some(false)
+                });
+        if is_legacy_deepseek
+            && let Some(endpoints) = mapping
+                .get_mut("endpoints")
+                .and_then(yaml_serde::Value::as_mapping_mut)
+        {
+            endpoints.insert(
+                yaml_serde::Value::String("models".to_owned()),
+                yaml_serde::Value::String("https://api.deepseek.com/models".to_owned()),
+            );
+        }
+        mapping.insert(
+            yaml_serde::Value::String("kind".to_owned()),
+            yaml_serde::Value::String(
+                if is_legacy_deepseek {
+                    "deepseek"
+                } else {
+                    "custom"
+                }
+                .to_owned(),
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn is_absolute_http_url(value: &str) -> bool {

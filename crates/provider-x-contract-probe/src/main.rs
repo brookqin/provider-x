@@ -56,6 +56,9 @@ enum ProbeError {
     #[error("invalid contract fixture: {0}")]
     Core(#[from] provider_x_core::CoreError),
 
+    #[error("invalid provider implementation: {0}")]
+    Provider(#[from] provider_x_providers::ProviderError),
+
     #[error("evidence serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
 
@@ -336,6 +339,7 @@ fn probe_config(args: &ProbeArgs, mock_provider: Option<SocketAddr>) -> Provider
                 name: format!("M0 {provider_id}"),
                 description: Some("strict local contract fixture".to_owned()),
                 enabled: true,
+                kind: provider_x_core::ProviderKind::Custom,
                 protocol: ProtocolId::OpenaiResponses,
                 anthropic_thinking: None,
                 endpoints: EndpointConfig {
@@ -354,7 +358,7 @@ fn probe_config(args: &ProbeArgs, mock_provider: Option<SocketAddr>) -> Provider
             .collect()
     });
     ProvidersDocument {
-        schema_version: 1,
+        schema_version: provider_x_core::SCHEMA_VERSION,
         listener: ListenerConfig {
             host: args.listen.ip().to_string(),
             port: args.listen.port(),
@@ -389,7 +393,8 @@ fn probe_cache(config: &ProvidersDocument) -> Result<ModelCacheDocument, ProbeEr
         providers.insert(
             provider.id.clone(),
             ProviderModelCache {
-                config_fingerprint: provider.routing_fingerprint()?,
+                config_fingerprint: provider_x_providers::resolve_provider(provider)
+                    .routing_fingerprint()?,
                 last_successful_refresh_at: "2026-08-12T00:00:00Z".to_owned(),
                 source: ProviderModelSource {
                     protocol: ProtocolId::OpenaiResponses,

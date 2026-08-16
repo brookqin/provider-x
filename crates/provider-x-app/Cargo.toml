@@ -25,6 +25,7 @@ hex.workspace = true
 provider-x-core = { path = "../provider-x-core" }
 provider-x-catalog = { path = "../provider-x-catalog" }
 provider-x-egress = { path = "../provider-x-egress" }
+provider-x-providers = { path = "../provider-x-providers" }
 rust-i18n.workspace = true
 serde.workspace = true
 serde_json.workspace = true

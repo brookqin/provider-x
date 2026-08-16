@@ -2,6 +2,8 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
+pub const MODEL_CACHE_SCHEMA_VERSION: u32 = 1;
+
 use crate::CoreError;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -186,6 +188,15 @@ pub enum ProtocolId {
     AnthropicMessages,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    #[serde(rename = "deepseek")]
+    DeepSeek,
+    #[default]
+    Custom,
+}
+
 /// Protocol-neutral result of a Provider's explicit model-list request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredModel {
@@ -268,10 +279,10 @@ impl ModelCacheDocument {
     ///
     /// Returns an error for unsupported schema versions, duplicates, or catalog ID mismatches.
     pub fn validate(&self) -> Result<(), CoreError> {
-        if self.schema_version != crate::config::SCHEMA_VERSION {
+        if self.schema_version != MODEL_CACHE_SCHEMA_VERSION {
             return Err(CoreError::UnsupportedSchemaVersion {
                 actual: self.schema_version,
-                expected: crate::config::SCHEMA_VERSION,
+                expected: MODEL_CACHE_SCHEMA_VERSION,
             });
         }
 

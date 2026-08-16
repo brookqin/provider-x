@@ -40,8 +40,8 @@ configured provider.
   Completions providers.
 - Adapt Responses requests and streams to Anthropic Messages, including signed thinking blocks and
   stateful tool continuations.
-- Discover provider models explicitly and enrich missing metadata with exact matches from
-  [models.dev](https://models.dev/).
+- Discover provider models explicitly, map dedicated implementations to their
+  [models.dev](https://models.dev/) provider IDs, and enrich missing metadata with exact matches.
 - Manage provider settings, model visibility and capabilities, Codex integration, launch at login,
   and English or Simplified Chinese UI from a native GPUI settings window.
 - Respect `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` for upstream connections.
@@ -136,22 +136,18 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 
 1. Launch ProviderX and choose **Open Settings** from its menu-bar item.
 2. Select **Add provider**.
-3. Choose a provider template or **Custom**, then enter its name, upstream protocol, HTTP endpoint,
-   optional WebSocket endpoint, transport support, and API key.
+3. Choose a provider template or **Custom**. Dedicated templates require only a name and API key;
+   custom providers also expose the upstream protocol, HTTP endpoint, and optional WebSocket
+   endpoint.
 4. Refresh the model list. Review model names and optional capability metadata as needed.
 5. Save the provider and enable it.
 6. Open **Global Settings** and enable **Codex / ChatGPT Desktop Integration**.
 7. Fully quit and restart ChatGPT Desktop, then select a namespaced model such as
    `provider-id/model-id`.
 
-For DeepSeek over Anthropic Messages, choose **Anthropic Messages**. The DeepSeek template sets the
-HTTP base URL to `https://api.deepseek.com/anthropic`; ProviderX appends `/v1/messages`, sends the
-configured key as `x-api-key`, and keeps the key private. Model refresh continues to use DeepSeek's
-compatible `/models` endpoint through the template's typed model-list override. The template also
-sets `anthropic_thinking: enabled`: thinking remains on for normal and tool-continuation turns, and
-signed thinking blocks are returned unchanged. When a forced tool choice conflicts with enabled
-thinking, ProviderX keeps thinking on and expresses the tool requirement as an explicit instruction
-with automatic tool selection instead of disabling thinking.
+Dedicated provider templates include their recommended protocol, official endpoints, discovery
+behavior, and models.dev provider ID, so they do not expose protocol or endpoint selection. Create
+a custom provider when another compatible protocol or a non-standard endpoint is required.
 
 Custom Anthropic providers default to `anthropic_thinking: adaptive`, which is required by current
 Claude models. Compatible endpoints that implement legacy/manual extended thinking can explicitly

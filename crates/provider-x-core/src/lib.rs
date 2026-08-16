@@ -7,13 +7,13 @@ mod snapshot;
 
 pub use config::{
     AnthropicThinkingMode, AuthConfig, CodexConfig, EndpointConfig, ListenerConfig, ProviderConfig,
-    ProvidersDocument, TimeoutConfig, TransportConfig,
+    ProvidersDocument, SCHEMA_VERSION, TimeoutConfig, TransportConfig,
 };
 pub use error::CoreError;
 pub use model::{
-    CatalogModelId, DiscoveredModel, MetadataSource, ModelCacheDocument, ModelId,
-    ModelPublicationStatus, ProtocolId, ProviderId, ProviderModelCache, ProviderModelSource,
-    ProviderModelSpec,
+    CatalogModelId, DiscoveredModel, MODEL_CACHE_SCHEMA_VERSION, MetadataSource,
+    ModelCacheDocument, ModelId, ModelPublicationStatus, ProtocolId, ProviderId, ProviderKind,
+    ProviderModelCache, ProviderModelSource, ProviderModelSpec,
 };
 pub use proxy::ProxyEnvironment;
 pub use route::{RouteDecision, RouteResolver};

@@ -19,6 +19,7 @@ protocol-openai-chat-completions = { path = "../protocol-openai-chat-completions
 provider-x-catalog = { path = "../provider-x-catalog" }
 provider-x-core = { path = "../provider-x-core" }
 provider-x-network = { path = "../provider-x-network" }
+provider-x-providers = { path = "../provider-x-providers" }
 provider-x-protocol = { path = "../provider-x-protocol" }
 serde.workspace = true
 thiserror.workspace = true

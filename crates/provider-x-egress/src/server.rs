@@ -12,8 +12,9 @@ use hyper::{
     Method, Request, Response, StatusCode, Uri, body::Incoming, header, service::service_fn,
 };
 use hyper_util::rt::TokioIo;
-use protocol_openai_responses::{ResponsesPath, http_error_body, inspect_http, rewrite_http_model};
-use provider_x_core::{ProtocolId, RouteDecision};
+use protocol_openai_responses::{ResponsesPath, http_error_body, inspect_http};
+use provider_x_core::RouteDecision;
+use provider_x_providers::{HttpResponseAdapter, HttpTarget};
 use tokio::{
     net::TcpListener,
     sync::{OwnedSemaphorePermit, watch},
@@ -429,13 +430,12 @@ async fn proxy(
         codex_turn_metadata_header_present: parts.headers.contains_key("x-codex-turn-metadata"),
     }));
 
-    let (base_url, converted_protocol, headers, body, tool_names, client) = match decision {
+    let (target, response_adapter, headers, body, client) = match decision {
         RouteDecision::BuiltInOfficial => (
-            state.official_base_url.to_string(),
-            None,
+            HttpTarget::PreserveIngressPath(state.official_base_url.to_string()),
+            HttpResponseAdapter::Passthrough,
             official_request_headers(&parts.headers),
             original_body,
-            None,
             &state.official_client,
         ),
         RouteDecision::UnavailableManagedModel => return Err(ProxyError::ModelNotAvailable),
@@ -446,66 +446,31 @@ async fn proxy(
             let provider = runtime
                 .provider(&provider_id)
                 .ok_or(ProxyError::ProviderNotAvailable)?;
-            let (base_url, body, tool_names) = match provider.config.protocol {
-                ProtocolId::OpenaiResponses => (
-                    provider.config.endpoints.http.clone(),
-                    rewrite_http_model(&decoded_body, upstream_model_id.as_str())
-                        .map_err(|error| ProxyError::InvalidRequest(error.to_string()))?,
-                    None,
-                ),
-                ProtocolId::OpenaiChatCompletions => {
-                    let request = protocol_openai_chat_completions::prepare_http_request(
-                        &decoded_body,
-                        upstream_model_id.as_str(),
-                        state.request_body_limit_bytes,
-                    )
-                    .map_err(|error| ProxyError::InvalidRequest(error.to_string()))?;
-                    (
-                        protocol_openai_chat_completions::chat_completions_url(
-                            &provider.config.endpoints.http,
-                        ),
-                        request.body,
-                        Some(request.tool_names),
-                    )
-                }
-                ProtocolId::AnthropicMessages => {
-                    let request =
-                        protocol_anthropic_messages::prepare_http_request_with_thinking_mode(
-                            &decoded_body,
-                            upstream_model_id.as_str(),
-                            state.request_body_limit_bytes,
-                            provider.config.anthropic_thinking_mode(),
-                        )
-                        .map_err(|error| ProxyError::InvalidRequest(error.to_string()))?;
-                    (
-                        protocol_anthropic_messages::messages_url(&provider.config.endpoints.http),
-                        request.body,
-                        Some(request.tool_names),
-                    )
-                }
-            };
+            let prepared = provider
+                .profile
+                .prepare_http_request(
+                    &decoded_body,
+                    upstream_model_id.as_str(),
+                    state.request_body_limit_bytes,
+                )
+                .map_err(|error| ProxyError::InvalidRequest(error.to_string()))?;
             (
-                base_url,
-                (provider.config.protocol != ProtocolId::OpenaiResponses)
-                    .then_some(provider.config.protocol),
+                prepared.target,
+                prepared.response_adapter,
                 third_party_request_headers(
                     &parts.headers,
                     &provider.config.auth,
-                    provider.config.protocol,
+                    &provider.profile,
                 )?,
-                body,
-                tool_names,
+                prepared.body,
                 &provider.client,
             )
         }
     };
 
-    let uri = if converted_protocol.is_some() {
-        base_url
-            .parse()
-            .map_err(|_| ProxyError::InvalidUpstreamUri)?
-    } else {
-        upstream_uri(&base_url, &parts.uri)?
+    let uri = match target {
+        HttpTarget::PreserveIngressPath(base_url) => upstream_uri(&base_url, &parts.uri)?,
+        HttpTarget::Exact(url) => url.parse().map_err(|_| ProxyError::InvalidUpstreamUri)?,
     };
     let mut upstream = Request::builder()
         .method(parts.method)
@@ -528,24 +493,27 @@ async fn proxy(
     }));
     let (parts, body) = response.into_parts();
     let stream_timeout = Duration::from_millis(state.stream_idle_timeout_ms);
-    let rewrites_success_body = converted_protocol.is_some() && parts.status.is_success();
-    let downstream_body = match converted_protocol.filter(|_| parts.status.is_success()) {
-        Some(ProtocolId::OpenaiChatCompletions) => {
+    let rewrites_success_body =
+        !matches!(&response_adapter, HttpResponseAdapter::Passthrough) && parts.status.is_success();
+    let downstream_body = match response_adapter {
+        HttpResponseAdapter::OpenaiChatCompletions(tool_names) if parts.status.is_success() => {
             let decoder = protocol_openai_chat_completions::ChatSseDecoder::with_tool_names(
                 state.request_body_limit_bytes,
-                tool_names.unwrap_or_default(),
+                tool_names,
             );
             crate::chat_http_bridge::ChatCompletionBody::new(body, decoder, stream_timeout).boxed()
         }
-        Some(ProtocolId::AnthropicMessages) => {
+        HttpResponseAdapter::AnthropicMessages(tool_names) if parts.status.is_success() => {
             let decoder = protocol_anthropic_messages::AnthropicSseDecoder::with_tool_names(
                 state.request_body_limit_bytes,
-                tool_names.unwrap_or_default(),
+                tool_names,
             );
             crate::anthropic_http_bridge::AnthropicMessageBody::new(body, decoder, stream_timeout)
                 .boxed()
         }
-        Some(ProtocolId::OpenaiResponses) | None => {
+        HttpResponseAdapter::Passthrough
+        | HttpResponseAdapter::OpenaiChatCompletions(_)
+        | HttpResponseAdapter::AnthropicMessages(_) => {
             IdleTimeoutBody::new(body, stream_timeout).boxed()
         }
     };

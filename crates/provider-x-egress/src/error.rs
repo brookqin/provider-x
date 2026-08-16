@@ -11,6 +11,9 @@ pub enum EgressBuildError {
     #[error(transparent)]
     ProxyConfiguration(#[from] provider_x_network::ProxyConfigurationError),
 
+    #[error(transparent)]
+    Provider(#[from] provider_x_providers::ProviderError),
+
     #[error("duplicate provider {0} in egress state")]
     DuplicateProvider(String),
 

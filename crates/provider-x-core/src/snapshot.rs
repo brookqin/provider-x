@@ -27,6 +27,28 @@ impl RuntimeSnapshot {
         providers: &ProvidersDocument,
         cache: &ModelCacheDocument,
     ) -> Result<Self, CoreError> {
+        Self::build_with_fingerprint_matcher(providers, cache, |provider, candidate| {
+            Ok(candidate == provider.routing_fingerprint()?)
+        })
+    }
+
+    /// Builds a snapshot with an external matcher for effective provider semantics.
+    ///
+    /// Provider implementations live outside this transport-neutral crate. Production callers use
+    /// this entry point so vendor implementation revisions, rather than raw preset fields, decide
+    /// whether a model cache is current.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::build`] or an error from `fingerprint_matches`.
+    pub fn build_with_fingerprint_matcher<F>(
+        providers: &ProvidersDocument,
+        cache: &ModelCacheDocument,
+        mut fingerprint_matches: F,
+    ) -> Result<Self, CoreError>
+    where
+        F: FnMut(&crate::ProviderConfig, &str) -> Result<bool, CoreError>,
+    {
         providers.validate()?;
         cache.validate()?;
 
@@ -44,7 +66,7 @@ impl RuntimeSnapshot {
                         provider_id: provider.id.to_string(),
                     })?;
 
-            if provider_cache.config_fingerprint != provider.routing_fingerprint()? {
+            if !fingerprint_matches(provider, &provider_cache.config_fingerprint)? {
                 return Err(CoreError::StaleModelCache {
                     provider_id: provider.id.to_string(),
                 });

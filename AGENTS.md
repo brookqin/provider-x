@@ -24,6 +24,8 @@ when dependencies change.
 - `crates/protocol-openai-chat-completions`: conversion between Responses semantics and OpenAI
   Chat Completions HTTP/SSE semantics.
 - `crates/provider-x-network`: shared direct/proxied HTTP, HTTPS, and WebSocket connector policy.
+- `crates/provider-x-providers`: dedicated vendor profiles, custom-provider profiles, fixed
+  protocol/endpoint choices, and models.dev provider identity mapping.
 - `crates/provider-x-catalog`: provider model discovery, model-registry recommendations, review
   state, and private catalog projection.
 - `crates/provider-x-egress`: loopback server, routing, authorization handling, connection limits,

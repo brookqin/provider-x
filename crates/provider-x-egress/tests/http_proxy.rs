@@ -75,7 +75,7 @@ impl CollectingObserver {
 
 fn providers(provider: Option<ProviderConfig>, body_limit: u64) -> ProvidersDocument {
     ProvidersDocument {
-        schema_version: 1,
+        schema_version: provider_x_core::SCHEMA_VERSION,
         listener: ListenerConfig {
             host: "127.0.0.1".to_owned(),
             port: 43119,
@@ -103,6 +103,7 @@ fn provider(upstream: SocketAddr) -> ProviderConfig {
         name: "Provider A".to_owned(),
         description: None,
         enabled: true,
+        kind: provider_x_core::ProviderKind::Custom,
         protocol: ProtocolId::OpenaiResponses,
         anthropic_thinking: None,
         endpoints: EndpointConfig {
@@ -273,7 +274,9 @@ fn catalog_cache(providers: &ProvidersDocument) -> ModelCacheDocument {
                 (
                     provider.id.clone(),
                     ProviderModelCache {
-                        config_fingerprint: provider.routing_fingerprint().unwrap(),
+                        config_fingerprint: provider_x_providers::resolve_provider(provider)
+                            .routing_fingerprint()
+                            .unwrap(),
                         last_successful_refresh_at: "2026-08-12T00:00:00Z".to_owned(),
                         source: ProviderModelSource {
                             protocol: provider.protocol,
@@ -2177,6 +2180,90 @@ async fn chat_completions_provider_bridges_websocket_tools_and_history() {
 }
 
 #[tokio::test]
+#[ignore = "requires PROVIDER_X_DEEPSEEK_API_KEY and live DeepSeek Responses access"]
+async fn live_deepseek_responses_provider_contract() {
+    let api_key = std::env::var("PROVIDER_X_DEEPSEEK_API_KEY")
+        .expect("PROVIDER_X_DEEPSEEK_API_KEY is required");
+    let provider_id = ProviderId::new("deepseek").unwrap();
+    let model_id = ModelId::new("deepseek-v4-flash").unwrap();
+    let configured = ProviderConfig {
+        id: provider_id.clone(),
+        name: "DeepSeek Responses live contract".to_owned(),
+        description: None,
+        enabled: true,
+        kind: provider_x_core::ProviderKind::DeepSeek,
+        protocol: ProtocolId::OpenaiResponses,
+        anthropic_thinking: None,
+        endpoints: EndpointConfig {
+            http: "https://api.deepseek.com".to_owned(),
+            websocket: None,
+            models: Some("https://api.deepseek.com/models".to_owned()),
+        },
+        auth: AuthConfig::Bearer { api_key },
+        transports: TransportConfig {
+            http_sse: true,
+            websocket: false,
+        },
+    };
+    let cache = ModelCacheDocument {
+        schema_version: 1,
+        providers: BTreeMap::from([(
+            provider_id.clone(),
+            ProviderModelCache {
+                config_fingerprint: provider_x_providers::resolve_provider(&configured)
+                    .routing_fingerprint()
+                    .unwrap(),
+                last_successful_refresh_at: "live".to_owned(),
+                source: ProviderModelSource {
+                    protocol: ProtocolId::OpenaiResponses,
+                    endpoint: "https://api.deepseek.com/models".to_owned(),
+                },
+                models: vec![ProviderModelSpec {
+                    upstream_model_id: model_id.clone(),
+                    catalog_model_id: CatalogModelId::for_provider(&provider_id, &model_id),
+                    display_name: "DeepSeek V4 Flash".to_owned(),
+                    publication_status: ModelPublicationStatus::Ready,
+                    context_window: Some(128_000),
+                    supported_reasoning_levels: vec!["high".to_owned(), "max".to_owned()],
+                    supports_parallel_tool_calls: Some(true),
+                    supports_search_tool: Some(true),
+                    metadata_sources: BTreeMap::new(),
+                }],
+            },
+        )]),
+    };
+    let (proxy, shutdown) = spawn_proxy_with_cache(
+        providers(Some(configured), 1_048_576),
+        cache,
+        "http://127.0.0.1:9/backend-api/codex".to_owned(),
+    )
+    .await;
+    let request = Request::builder()
+        .method("POST")
+        .uri(ingress_http_url(proxy, "/v1/responses"))
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from_static(
+            br#"{"model":"deepseek/deepseek-v4-flash","input":"Reply with exactly PROVIDER_X_RESPONSES_OK and nothing else.","stream":false,"reasoning":{"effort":"high"}}"#,
+        )))
+        .unwrap();
+
+    let response = client().request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: Value = serde_json::from_slice(&body).unwrap();
+    let output = response["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|item| item["content"].as_array().into_iter().flatten())
+        .filter(|content| content["type"] == "output_text")
+        .filter_map(|content| content["text"].as_str())
+        .collect::<String>();
+    assert_eq!(output.trim(), "PROVIDER_X_RESPONSES_OK");
+    shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
 #[ignore = "requires PROVIDER_X_DEEPSEEK_API_KEY and live DeepSeek access"]
 #[allow(clippy::too_many_lines)] // Keep the full two-turn live contract visible in one test.
 async fn live_deepseek_v4_pro_chat_completions_tool_contract() {
@@ -2189,6 +2276,7 @@ async fn live_deepseek_v4_pro_chat_completions_tool_contract() {
         name: "DeepSeek live contract".to_owned(),
         description: None,
         enabled: true,
+        kind: provider_x_core::ProviderKind::Custom,
         protocol: ProtocolId::OpenaiChatCompletions,
         anthropic_thinking: None,
         endpoints: EndpointConfig {
@@ -2207,7 +2295,9 @@ async fn live_deepseek_v4_pro_chat_completions_tool_contract() {
         providers: BTreeMap::from([(
             provider_id.clone(),
             ProviderModelCache {
-                config_fingerprint: configured.routing_fingerprint().unwrap(),
+                config_fingerprint: provider_x_providers::resolve_provider(&configured)
+                    .routing_fingerprint()
+                    .unwrap(),
                 last_successful_refresh_at: "live".to_owned(),
                 source: ProviderModelSource {
                     protocol: ProtocolId::OpenaiChatCompletions,
@@ -2329,6 +2419,7 @@ async fn live_deepseek_v4_pro_anthropic_messages_tool_contract() {
         name: "DeepSeek Anthropic live contract".to_owned(),
         description: None,
         enabled: true,
+        kind: provider_x_core::ProviderKind::Custom,
         protocol: ProtocolId::AnthropicMessages,
         anthropic_thinking: Some(provider_x_core::AnthropicThinkingMode::Enabled),
         endpoints: EndpointConfig {
@@ -2347,7 +2438,9 @@ async fn live_deepseek_v4_pro_anthropic_messages_tool_contract() {
         providers: BTreeMap::from([(
             provider_id.clone(),
             ProviderModelCache {
-                config_fingerprint: configured.routing_fingerprint().unwrap(),
+                config_fingerprint: provider_x_providers::resolve_provider(&configured)
+                    .routing_fingerprint()
+                    .unwrap(),
                 last_successful_refresh_at: "live".to_owned(),
                 source: ProviderModelSource {
                     protocol: ProtocolId::AnthropicMessages,
