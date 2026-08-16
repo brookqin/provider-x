@@ -28,7 +28,7 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 - 由用户主动刷新供应商模型，并将专用厂商实现映射到 [models.dev](https://models.dev/) 的厂商 ID，以精确匹配结果补充缺失元数据。
 - 通过原生 GPUI 设置窗口管理供应商、模型可见性与能力、Codex 集成、开机运行以及英文或简体中文界面。
 - 上游连接支持 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
-- 将脱敏后的运行错误和接口请求错误写入按天轮换的本机私有日志，并只保留 10 天。
+- 将脱敏后的请求路由、上游响应与运行错误写入按天轮换的本机私有日志，并只保留 10 天。
 
 ### 计划中
 
@@ -127,7 +127,7 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 
 供应商 API Key 保存在本机私有配置中。ProviderX 使用严格的文件权限、普通文件检查、原子写入和并发修改检测。Codex 集成只更新 `~/.codex/config.toml` 中由 ProviderX 管理的设置，并保留无关配置。
 
-脱敏后的运行错误和接口请求错误以 JSON Lines 格式写入 `logs/provider-x-YYYY-MM-DD.log`。日志按照 Mac 的本地自然日轮换，仅保留当天及此前 9 天。错误记录包含请求方法、不含查询参数的接口路径、入口认证结果、状态码和稳定错误码等诊断字段。入口认证失败时会保留完整路径；仅当首段符合 64 位 capability 的标准格式时，才会将该段替换为 `<redacted-capability>`。日志不会包含原始认证数据、原始 capability、请求或响应正文，或原始 Codex 配置内容。
+脱敏后的请求路由、上游响应与运行错误以 JSON Lines 格式写入 `logs/provider-x-YYYY-MM-DD.log`。日志按照 Mac 的本地自然日轮换，仅保留当天及此前 9 天。每条记录包含应用版本、进程运行 ID 和级别；WebSocket 记录还包含会话 ID，可将请求、上游握手和错误关联起来。错误记录包含请求方法、不含查询参数的接口路径、入口认证结果、状态码和稳定错误码；WebSocket 错误还会记录直连或 HTTP 桥接模式、路由、失败阶段、方向及脱敏后的原因分类。入口认证失败时会保留完整路径；仅当首段符合 64 位 capability 的标准格式时，才会将该段替换为 `<redacted-capability>`。日志不会包含原始认证数据、原始 capability、请求或响应正文、原始上游错误文本，或原始 Codex 配置内容。
 
 请勿公开上述目录，也不要将其中内容直接附加到 Issue 报告中。
 

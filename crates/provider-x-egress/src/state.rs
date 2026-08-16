@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -108,6 +115,7 @@ pub struct EgressState {
     pub(crate) official_client: UpstreamClient,
     pub(crate) official_websocket_connector: NetworkConnector,
     pub(crate) websocket_fallback_on_upgrade: bool,
+    websocket_session_sequence: Arc<AtomicU64>,
     ingress_capability: IngressCapability,
     observer: Arc<dyn EgressObserver>,
 }
@@ -151,6 +159,7 @@ impl EgressState {
             official_client,
             official_websocket_connector,
             websocket_fallback_on_upgrade: false,
+            websocket_session_sequence: Arc::new(AtomicU64::new(1)),
             ingress_capability,
             observer: Arc::new(NoopObserver),
         })
@@ -218,6 +227,11 @@ impl EgressState {
 
     pub(crate) fn observe(&self, event: EgressEvent) {
         self.observer.record(event);
+    }
+
+    pub(crate) fn next_websocket_session_id(&self) -> u64 {
+        self.websocket_session_sequence
+            .fetch_add(1, Ordering::Relaxed)
     }
 
     pub(crate) fn authorized_path<'a>(&self, path: &'a str) -> Option<&'a str> {

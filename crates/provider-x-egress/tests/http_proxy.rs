@@ -16,7 +16,7 @@ use provider_x_core::{
 };
 use provider_x_egress::{
     EgressEvent, EgressObserver, EgressServer, EgressState, IngressCapability, ObservedRoute,
-    ObservedTransport,
+    ObservedTransport, ObservedWebSocketDirection, ObservedWebSocketReason, ObservedWebSocketStage,
 };
 use serde_json::Value;
 use tokio::{
@@ -1509,9 +1509,12 @@ async fn active_websocket_holds_the_only_connection_permit_until_close() {
     let mut configuration = providers(None, 1_048_576);
     configuration.listener.max_connections = 1;
     let (upstream, mut captured) = spawn_upstream(vec![r#"{"deleted":true}"#]).await;
-    let (proxy, shutdown) = spawn_proxy(
+    let observer = Arc::new(CollectingObserver::default());
+    let contract_observer: Arc<dyn EgressObserver> = observer.clone();
+    let (proxy, shutdown) = spawn_proxy_with_observer(
         configuration,
         format!("http://{upstream}/backend-api/codex"),
+        Some(contract_observer),
     )
     .await;
     let (mut websocket, _) = connect_async(ingress_websocket_url(proxy)).await.unwrap();
@@ -1539,6 +1542,10 @@ async fn active_websocket_holds_the_only_connection_permit_until_close() {
         .unwrap();
     assert_eq!(response.status(), hyper::StatusCode::OK);
     assert_eq!(captured.recv().await.unwrap().method, "DELETE");
+    assert!(!observer.records().iter().any(|event| matches!(
+        event,
+        EgressEvent::ErrorObserved(event) if event.code == "websocket_transport_failed"
+    )));
     shutdown.send(true).unwrap();
 }
 
@@ -1773,6 +1780,8 @@ async fn official_websocket_preserves_credentials_and_supports_multiple_turns() 
     assert_eq!(request_records.len(), 2);
     assert_eq!(request_records[0].transport, ObservedTransport::WebSocket);
     assert_eq!(request_records[0].route, ObservedRoute::Official);
+    let session_id = request_records[0].session_id.expect("WebSocket session ID");
+    assert_eq!(request_records[1].session_id, Some(session_id));
     assert_eq!(request_records[0].sequence, 1);
     assert!(!request_records[0].previous_response_id_present);
     assert_eq!(request_records[1].sequence, 2);
@@ -1781,6 +1790,7 @@ async fn official_websocket_preserves_credentials_and_supports_multiple_turns() 
         event,
         EgressEvent::UpstreamObserved(event)
             if event.transport == ObservedTransport::WebSocket
+                && event.session_id == Some(session_id)
                 && event.route == ObservedRoute::Official
                 && event.status == 101
     )));
@@ -2646,9 +2656,12 @@ async fn bridged_websocket_finishes_at_terminal_event_without_waiting_for_http_e
 async fn websocket_waiting_for_first_message_honors_idle_timeout() {
     let mut configuration = providers(None, 1_048_576);
     configuration.timeouts.websocket_idle_ms = 50;
-    let (proxy, shutdown) = spawn_proxy(
+    let observer = Arc::new(CollectingObserver::default());
+    let contract_observer: Arc<dyn EgressObserver> = observer.clone();
+    let (proxy, shutdown) = spawn_proxy_with_observer(
         configuration,
         "http://127.0.0.1:9/backend-api/codex".to_owned(),
+        Some(contract_observer),
     )
     .await;
     let request = ingress_websocket_url(proxy).into_client_request().unwrap();
@@ -2668,6 +2681,22 @@ async fn websocket_waiting_for_first_message_honors_idle_timeout() {
         websocket.next().await.unwrap().unwrap(),
         Message::Close(_)
     ));
+    let records = observer.records();
+    let failure = records
+        .iter()
+        .find_map(|event| match event {
+            EgressEvent::ErrorObserved(event) if event.code == "idle_timeout" => {
+                event.websocket.as_ref()
+            }
+            _ => None,
+        })
+        .expect("structured WebSocket timeout diagnostic");
+    assert_eq!(failure.stage, ObservedWebSocketStage::FirstMessage);
+    assert_eq!(
+        failure.direction,
+        Some(ObservedWebSocketDirection::Downstream)
+    );
+    assert_eq!(failure.reason, ObservedWebSocketReason::Timeout);
     shutdown.send(true).unwrap();
 }
 

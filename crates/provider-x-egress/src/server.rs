@@ -290,6 +290,7 @@ async fn handle(
                     status: Some(response.status().as_u16()),
                     code: "upstream_http_status".to_owned(),
                     message: "upstream returned an HTTP error status".to_owned(),
+                    websocket: None,
                 }));
             }
             response
@@ -324,6 +325,7 @@ fn observe_proxy_error(
         status: Some(proxy_error_status(error).as_u16()),
         code: error.code().to_owned(),
         message: error.to_string(),
+        websocket: None,
     }));
 }
 
@@ -422,6 +424,7 @@ async fn proxy(
     state.observe(EgressEvent::RequestObserved(RequestObserved {
         transport: ObservedTransport::Http,
         path: parts.uri.path().to_owned(),
+        session_id: None,
         sequence: 1,
         model: inspected.model.clone(),
         route: observed_route.clone(),
@@ -488,6 +491,7 @@ async fn proxy(
     .map_err(|error| classify_upstream_error(&error))?;
     state.observe(EgressEvent::UpstreamObserved(UpstreamObserved {
         transport: ObservedTransport::Http,
+        session_id: None,
         route: observed_route,
         status: response.status().as_u16(),
     }));

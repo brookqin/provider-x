@@ -14,7 +14,8 @@ mod ws_proxy;
 pub use error::{EgressBuildError, ProxyError};
 pub use events::{
     EgressEvent, EgressObserver, ErrorObserved, FallbackObserved, ObservedRoute, ObservedTransport,
-    RequestObserved, UpstreamObserved,
+    ObservedWebSocketDirection, ObservedWebSocketMode, ObservedWebSocketReason,
+    ObservedWebSocketStage, RequestObserved, UpstreamObserved, WebSocketFailureObserved,
 };
 pub use server::EgressServer;
 pub use state::{EgressState, IngressCapability, PreparedEgressReload};

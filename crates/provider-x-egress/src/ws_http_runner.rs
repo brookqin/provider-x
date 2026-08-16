@@ -12,11 +12,13 @@ use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::{
-    EgressEvent, EgressState, ObservedRoute, ObservedTransport, UpstreamObserved,
+    EgressEvent, EgressState, ObservedRoute, ObservedTransport, ObservedWebSocketReason,
+    ObservedWebSocketStage, UpstreamObserved,
     headers::third_party_request_headers,
     state::ProviderEgress,
     ws_proxy::{
-        DownstreamSocket, WebSocketProxyError, WebSocketShutdown, wait_for_drain, wait_for_force,
+        DownstreamSocket, WebSocketFailure, WebSocketProxyError, WebSocketShutdown, wait_for_drain,
+        wait_for_force,
     },
 };
 
@@ -28,6 +30,7 @@ pub(crate) struct WsHttpSessionContext<'a> {
     pub upstream_model: String,
     pub observed_route: ObservedRoute,
     pub codex_turn_metadata_header_present: bool,
+    pub session_id: u64,
     pub state: &'a EgressState,
 }
 
@@ -57,6 +60,7 @@ pub(crate) async fn run_with_adapter<A: WsHttpProtocolAdapter>(
         upstream_model: _,
         observed_route,
         codex_turn_metadata_header_present,
+        session_id,
         state,
     } = context;
     let mut next_text = Some(first_text.to_owned());
@@ -74,6 +78,7 @@ pub(crate) async fn run_with_adapter<A: WsHttpProtocolAdapter>(
                 runtime,
                 request_sequence,
                 codex_turn_metadata_header_present,
+                session_id,
                 state,
             )?;
             text
@@ -90,6 +95,7 @@ pub(crate) async fn run_with_adapter<A: WsHttpProtocolAdapter>(
                     request_headers,
                     body,
                     observed_route.clone(),
+                    session_id,
                     state,
                     shutdown,
                 )
@@ -117,6 +123,7 @@ fn validate_followup_route(
     runtime: &crate::state::EgressRuntimeSnapshot,
     sequence: u64,
     codex_turn_metadata_header_present: bool,
+    session_id: u64,
     state: &EgressState,
 ) -> Result<(), WebSocketProxyError> {
     let inspected = protocol_openai_responses::inspect_ws_text(text)
@@ -125,6 +132,7 @@ fn validate_followup_route(
     state.observe(EgressEvent::RequestObserved(crate::RequestObserved {
         transport: ObservedTransport::WebSocket,
         path: "/v1/responses".to_owned(),
+        session_id: Some(session_id),
         sequence,
         model: inspected.model,
         route: ObservedRoute::from(&decision),
@@ -167,9 +175,15 @@ async fn receive_next_create(
                 Duration::from_millis(state.websocket_idle_timeout_ms),
                 downstream.next(),
             ) => message
-                .map_err(|_| WebSocketProxyError::IdleTimeout)?
+                .map_err(|_| WebSocketProxyError::IdleTimeout(WebSocketFailure::downstream(
+                    ObservedWebSocketStage::Relay,
+                    ObservedWebSocketReason::Timeout,
+                )))?
                 .ok_or(WebSocketProxyError::ClientClosed)?
-                .map_err(|_| WebSocketProxyError::Transport)?,
+                .map_err(|_| WebSocketProxyError::Transport(WebSocketFailure::downstream(
+                    ObservedWebSocketStage::Relay,
+                    ObservedWebSocketReason::Transport,
+                )))?,
         };
         match message {
             Message::Text(text) => return Ok(text.to_string()),
@@ -203,6 +217,7 @@ async fn request_http<A: WsHttpProtocolAdapter>(
     source_headers: &hyper::HeaderMap,
     body: Bytes,
     observed_route: ObservedRoute,
+    session_id: u64,
     state: &EgressState,
     shutdown: &mut watch::Receiver<WebSocketShutdown>,
 ) -> Result<WsHttpStreamOutcome<A::Commit>, WebSocketProxyError> {
@@ -235,7 +250,12 @@ async fn request_http<A: WsHttpProtocolAdapter>(
         .method(Method::POST)
         .uri(uri)
         .body(Full::new(body))
-        .map_err(|_| WebSocketProxyError::UpstreamConnect)?;
+        .map_err(|_| {
+            WebSocketProxyError::UpstreamConnect(WebSocketFailure::upstream(
+                ObservedWebSocketStage::RequestBuild,
+                ObservedWebSocketReason::InvalidEndpoint,
+            ))
+        })?;
     *request.headers_mut() = headers;
 
     let response = tokio::select! {
@@ -244,11 +264,18 @@ async fn request_http<A: WsHttpProtocolAdapter>(
             Duration::from_millis(state.response_headers_timeout_ms),
             provider.client.request(request),
         ) => result
-            .map_err(|_| WebSocketProxyError::UpstreamConnect)?
-            .map_err(|_| WebSocketProxyError::UpstreamConnect)?,
+            .map_err(|_| WebSocketProxyError::UpstreamConnect(WebSocketFailure::upstream(
+                ObservedWebSocketStage::Connect,
+                ObservedWebSocketReason::Timeout,
+            )))?
+            .map_err(|_| WebSocketProxyError::UpstreamConnect(WebSocketFailure::upstream(
+                ObservedWebSocketStage::Connect,
+                ObservedWebSocketReason::Transport,
+            )))?,
     };
     state.observe(EgressEvent::UpstreamObserved(UpstreamObserved {
         transport: ObservedTransport::Http,
+        session_id: Some(session_id),
         route: observed_route,
         status: response.status().as_u16(),
     }));
@@ -281,12 +308,18 @@ async fn collect_sse<A: WsHttpProtocolAdapter>(
                         message = downstream.next() => Event::Downstream(message),
                     }
                 },
-            ) => result.map_err(|_| WebSocketProxyError::IdleTimeout)?,
+            ) => result.map_err(|_| WebSocketProxyError::IdleTimeout(WebSocketFailure::undirected(
+                ObservedWebSocketStage::ResponseStream,
+                ObservedWebSocketReason::Timeout,
+            )))?,
         };
         let frame = match event {
-            Event::Upstream(frame) => frame
-                .transpose()
-                .map_err(|_| WebSocketProxyError::Transport)?,
+            Event::Upstream(frame) => frame.transpose().map_err(|_| {
+                WebSocketProxyError::Transport(WebSocketFailure::upstream(
+                    ObservedWebSocketStage::ResponseStream,
+                    ObservedWebSocketReason::Transport,
+                ))
+            })?,
             Event::Downstream(Some(Ok(Message::Ping(payload)))) => {
                 send_downstream(downstream, Message::Pong(payload), state, shutdown.clone())
                     .await?;
@@ -300,7 +333,12 @@ async fn collect_sse<A: WsHttpProtocolAdapter>(
                 return Err(WebSocketProxyError::ConcurrentRequest);
             }
             Event::Downstream(Some(Ok(Message::Binary(_) | Message::Frame(_)) | Err(_))) => {
-                return Err(WebSocketProxyError::Transport);
+                return Err(WebSocketProxyError::Transport(
+                    WebSocketFailure::downstream(
+                        ObservedWebSocketStage::ResponseStream,
+                        ObservedWebSocketReason::Transport,
+                    ),
+                ));
             }
         };
         let Some(frame) = frame else { break };
@@ -341,7 +379,13 @@ async fn send_downstream(
             Duration::from_millis(state.websocket_idle_timeout_ms),
             downstream.send(message),
         ) => result
-            .map_err(|_| WebSocketProxyError::IdleTimeout)?
-            .map_err(|_| WebSocketProxyError::Transport),
+            .map_err(|_| WebSocketProxyError::IdleTimeout(WebSocketFailure::downstream(
+                ObservedWebSocketStage::ResponseStream,
+                ObservedWebSocketReason::Timeout,
+            )))?
+            .map_err(|_| WebSocketProxyError::Transport(WebSocketFailure::downstream(
+                ObservedWebSocketStage::ResponseStream,
+                ObservedWebSocketReason::Transport,
+            ))),
     }
 }

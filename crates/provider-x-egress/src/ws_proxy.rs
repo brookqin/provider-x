@@ -18,7 +18,9 @@ use protocol_openai_responses::{
     websocket_error_event,
 };
 use provider_x_core::{ProviderId, RouteDecision};
-use provider_x_network::{NetworkConnector, NetworkWebSocket, connect_websocket};
+use provider_x_network::{
+    NetworkConnector, NetworkWebSocket, WebSocketConnectionError, connect_websocket,
+};
 use provider_x_providers::WebSocketPlan;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, watch};
@@ -33,8 +35,10 @@ use tokio_tungstenite::{
 use tokio_util::task::TaskTracker;
 
 use crate::{
-    EgressEvent, EgressState, ErrorObserved, ObservedRoute, ObservedTransport, ProxyError,
-    RequestObserved, UpstreamObserved,
+    EgressEvent, EgressState, ErrorObserved, ObservedRoute, ObservedTransport,
+    ObservedWebSocketDirection, ObservedWebSocketMode, ObservedWebSocketReason,
+    ObservedWebSocketStage, ProxyError, RequestObserved, UpstreamObserved,
+    WebSocketFailureObserved,
     headers::{official_websocket_headers, third_party_websocket_headers},
     server::ProxyBody,
 };
@@ -77,6 +81,62 @@ enum PreparedUpstream {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WebSocketFailure {
+    stage: ObservedWebSocketStage,
+    direction: Option<ObservedWebSocketDirection>,
+    reason: ObservedWebSocketReason,
+}
+
+impl WebSocketFailure {
+    const fn new(
+        stage: ObservedWebSocketStage,
+        direction: Option<ObservedWebSocketDirection>,
+        reason: ObservedWebSocketReason,
+    ) -> Self {
+        Self {
+            stage,
+            direction,
+            reason,
+        }
+    }
+
+    pub(crate) const fn upstream(
+        stage: ObservedWebSocketStage,
+        reason: ObservedWebSocketReason,
+    ) -> Self {
+        Self::new(stage, Some(ObservedWebSocketDirection::Upstream), reason)
+    }
+
+    pub(crate) const fn downstream(
+        stage: ObservedWebSocketStage,
+        reason: ObservedWebSocketReason,
+    ) -> Self {
+        Self::new(stage, Some(ObservedWebSocketDirection::Downstream), reason)
+    }
+
+    pub(crate) const fn undirected(
+        stage: ObservedWebSocketStage,
+        reason: ObservedWebSocketReason,
+    ) -> Self {
+        Self::new(stage, None, reason)
+    }
+}
+
+#[derive(Debug)]
+struct SessionDiagnostics {
+    session_id: u64,
+    mode: Option<ObservedWebSocketMode>,
+    route: Option<ObservedRoute>,
+}
+
+struct DirectRelayContext {
+    runtime: Arc<crate::state::EgressRuntimeSnapshot>,
+    route: SessionRoute,
+    codex_turn_metadata_header_present: bool,
+    session_id: u64,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum WebSocketProxyError {
     #[error("the first WebSocket message must be a valid response.create")]
@@ -94,17 +154,17 @@ pub(crate) enum WebSocketProxyError {
     #[error("a WebSocket connection cannot switch Provider")]
     RouteChanged,
 
-    #[error("failed to connect to the upstream WebSocket")]
-    UpstreamConnect,
+    #[error("failed to connect to upstream")]
+    UpstreamConnect(WebSocketFailure),
 
     #[error("WebSocket connection was idle for too long")]
-    IdleTimeout,
+    IdleTimeout(WebSocketFailure),
 
     #[error("WebSocket connection is shutting down")]
     Shutdown,
 
     #[error("WebSocket transport failed")]
-    Transport,
+    Transport(WebSocketFailure),
 
     #[error("the client closed the WebSocket")]
     ClientClosed,
@@ -128,17 +188,17 @@ impl WebSocketProxyError {
             Self::TransportNotSupported => "transport_not_supported",
             Self::ModelNotAvailable => "model_not_available",
             Self::RouteChanged => "route_changed",
-            Self::IdleTimeout => "idle_timeout",
+            Self::IdleTimeout(_) => "idle_timeout",
             Self::Shutdown => "service_restart",
             Self::SessionHistoryLimit => "session_history_limit",
             Self::ConcurrentRequest => "concurrent_request",
             Self::InvalidFirstMessage => "invalid_request",
             Self::ProviderNotAvailable => "provider_not_available",
-            Self::UpstreamConnect => "upstream_connect_failed",
+            Self::UpstreamConnect(_) => "upstream_connect_failed",
             Self::UpstreamStatus(_) => "upstream_http_status",
             Self::InvalidUpstreamStream => "invalid_upstream_stream",
             Self::ClientClosed => "client_closed",
-            Self::Transport => "websocket_transport_failed",
+            Self::Transport(_) => "websocket_transport_failed",
         }
     }
 
@@ -154,17 +214,52 @@ impl WebSocketProxyError {
             Self::TransportNotSupported => "transport_not_supported",
             Self::ModelNotAvailable => "model_not_available",
             Self::RouteChanged => "route_changed",
-            Self::IdleTimeout => "idle_timeout",
+            Self::IdleTimeout(_) => "idle_timeout",
             Self::Shutdown => "service_restart",
             Self::SessionHistoryLimit => "session_history_limit",
             Self::ConcurrentRequest => "concurrent_request",
             Self::InvalidFirstMessage => "invalid_request",
             Self::ProviderNotAvailable
-            | Self::UpstreamConnect
+            | Self::UpstreamConnect(_)
             | Self::UpstreamStatus(_)
             | Self::InvalidUpstreamStream
             | Self::ClientClosed
-            | Self::Transport => "upstream_error",
+            | Self::Transport(_) => "upstream_error",
+        }
+    }
+
+    const fn failure(&self) -> WebSocketFailure {
+        match self {
+            Self::UpstreamConnect(failure)
+            | Self::IdleTimeout(failure)
+            | Self::Transport(failure) => *failure,
+            Self::InvalidFirstMessage => WebSocketFailure::downstream(
+                ObservedWebSocketStage::FirstMessage,
+                ObservedWebSocketReason::Protocol,
+            ),
+            Self::ModelNotAvailable
+            | Self::ProviderNotAvailable
+            | Self::TransportNotSupported
+            | Self::RouteChanged => WebSocketFailure::undirected(
+                ObservedWebSocketStage::Route,
+                ObservedWebSocketReason::Protocol,
+            ),
+            Self::ConcurrentRequest => WebSocketFailure::downstream(
+                ObservedWebSocketStage::Relay,
+                ObservedWebSocketReason::Protocol,
+            ),
+            Self::UpstreamStatus(_) => WebSocketFailure::upstream(
+                ObservedWebSocketStage::ResponseHeaders,
+                ObservedWebSocketReason::Rejected,
+            ),
+            Self::InvalidUpstreamStream | Self::SessionHistoryLimit => WebSocketFailure::upstream(
+                ObservedWebSocketStage::ResponseStream,
+                ObservedWebSocketReason::Protocol,
+            ),
+            Self::Shutdown | Self::ClientClosed => WebSocketFailure::undirected(
+                ObservedWebSocketStage::Relay,
+                ObservedWebSocketReason::Transport,
+            ),
         }
     }
 }
@@ -207,7 +302,8 @@ pub(crate) fn websocket_upgrade(
             Some(websocket_config(state.request_body_limit_bytes)),
         )
         .await;
-        run_session(socket, request_headers, state, shutdown).await;
+        let session_id = state.next_websocket_session_id();
+        run_session(socket, request_headers, state, shutdown, session_id).await;
     });
 
     let mut response = Response::new(
@@ -260,10 +356,16 @@ async fn run_session(
     request_headers: HeaderMap,
     state: Arc<EgressState>,
     mut shutdown: watch::Receiver<WebSocketShutdown>,
+    session_id: u64,
 ) {
+    let mut diagnostics = SessionDiagnostics {
+        session_id,
+        mode: None,
+        route: None,
+    };
     let result = async {
         let first = receive_first_message(&mut downstream, &state, &mut shutdown).await?;
-        let prepared = prepare_first_message(first, &request_headers, &state)?;
+        let prepared = prepare_first_message(first, &request_headers, &state, session_id)?;
         let PreparedFirstMessage {
             runtime,
             route,
@@ -271,6 +373,7 @@ async fn run_session(
             codex_turn_metadata_header_present,
             upstream,
         } = prepared;
+        diagnostics.route = Some(observed_route.clone());
         let PreparedUpstream::WebSocket {
             url,
             headers,
@@ -286,6 +389,7 @@ async fn run_session(
             else {
                 unreachable!()
             };
+            diagnostics.mode = Some(ObservedWebSocketMode::HttpBridge);
             return crate::ws_protocol_bridge::run(
                 &mut downstream,
                 &provider,
@@ -295,37 +399,20 @@ async fn run_session(
                 upstream_model,
                 observed_route,
                 codex_turn_metadata_header_present,
+                session_id,
                 &state,
                 &mut shutdown,
             )
             .await;
         };
-        let mut upstream_request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|_| WebSocketProxyError::UpstreamConnect)?;
-        for (name, value) in &headers {
-            upstream_request
-                .headers_mut()
-                .append(name.clone(), value.clone());
-        }
-        let (mut upstream, upstream_response) = tokio::select! {
-            () = wait_for_force(shutdown.clone()) => return Err(WebSocketProxyError::Shutdown),
-            result = tokio::time::timeout(
-                Duration::from_millis(state.response_headers_timeout_ms),
-                connect_websocket(
-                    connector,
-                    upstream_request,
-                    Some(websocket_config(state.request_body_limit_bytes)),
-                ),
-            ) => result
-                .map_err(|_| WebSocketProxyError::UpstreamConnect)?
-                .map_err(|_| WebSocketProxyError::UpstreamConnect)?,
-        };
+        diagnostics.mode = Some(ObservedWebSocketMode::DirectWebSocket);
+        let (mut upstream, upstream_status) =
+            connect_direct_upstream(&url, &headers, connector, &state, shutdown.clone()).await?;
         state.observe(EgressEvent::UpstreamObserved(UpstreamObserved {
             transport: ObservedTransport::WebSocket,
+            session_id: Some(session_id),
             route: observed_route,
-            status: upstream_response.status().as_u16(),
+            status: upstream_status,
         }));
         send_upstream(
             &mut upstream,
@@ -337,9 +424,12 @@ async fn run_session(
         let relay_result = relay(
             &mut downstream,
             &mut upstream,
-            runtime,
-            route,
-            codex_turn_metadata_header_present,
+            DirectRelayContext {
+                runtime,
+                route,
+                codex_turn_metadata_header_present,
+                session_id,
+            },
             &state,
             &mut shutdown,
         )
@@ -356,9 +446,44 @@ async fn run_session(
     if let Err(error) = result
         && is_reportable_session_error(&error)
     {
-        observe_session_error(&state, &error);
+        observe_session_error(&state, &diagnostics, &error);
         reject_downstream(&mut downstream, &error).await;
     }
+}
+
+async fn connect_direct_upstream(
+    url: &str,
+    headers: &HeaderMap,
+    connector: NetworkConnector,
+    state: &EgressState,
+    shutdown: watch::Receiver<WebSocketShutdown>,
+) -> Result<(UpstreamSocket, u16), WebSocketProxyError> {
+    let mut request = url.into_client_request().map_err(|_| {
+        WebSocketProxyError::UpstreamConnect(WebSocketFailure::upstream(
+            ObservedWebSocketStage::RequestBuild,
+            ObservedWebSocketReason::InvalidEndpoint,
+        ))
+    })?;
+    for (name, value) in headers {
+        request.headers_mut().append(name.clone(), value.clone());
+    }
+    let (socket, response) = tokio::select! {
+        () = wait_for_force(shutdown) => return Err(WebSocketProxyError::Shutdown),
+        result = tokio::time::timeout(
+            Duration::from_millis(state.response_headers_timeout_ms),
+            connect_websocket(
+                connector,
+                request,
+                Some(websocket_config(state.request_body_limit_bytes)),
+            ),
+        ) => result
+            .map_err(|_| WebSocketProxyError::UpstreamConnect(WebSocketFailure::upstream(
+                ObservedWebSocketStage::Connect,
+                ObservedWebSocketReason::Timeout,
+            )))?
+            .map_err(|error| map_websocket_connection_error(&error))?,
+    };
+    Ok((socket, response.status().as_u16()))
 }
 
 fn is_reportable_session_error(error: &WebSocketProxyError) -> bool {
@@ -368,7 +493,12 @@ fn is_reportable_session_error(error: &WebSocketProxyError) -> bool {
     )
 }
 
-fn observe_session_error(state: &EgressState, error: &WebSocketProxyError) {
+fn observe_session_error(
+    state: &EgressState,
+    diagnostics: &SessionDiagnostics,
+    error: &WebSocketProxyError,
+) {
+    let failure = error.failure();
     state.observe(EgressEvent::ErrorObserved(ErrorObserved {
         transport: ObservedTransport::WebSocket,
         method: "GET".to_owned(),
@@ -377,7 +507,48 @@ fn observe_session_error(state: &EgressState, error: &WebSocketProxyError) {
         status: error.status(),
         code: error.log_code().to_owned(),
         message: error.to_string(),
+        websocket: Some(WebSocketFailureObserved {
+            session_id: diagnostics.session_id,
+            mode: diagnostics.mode,
+            route: diagnostics.route.clone(),
+            stage: failure.stage,
+            direction: failure.direction,
+            reason: failure.reason,
+        }),
     }));
+}
+
+fn map_websocket_connection_error(error: &WebSocketConnectionError) -> WebSocketProxyError {
+    let (stage, reason) = match error {
+        WebSocketConnectionError::InvalidEndpoint => (
+            ObservedWebSocketStage::RequestBuild,
+            ObservedWebSocketReason::InvalidEndpoint,
+        ),
+        WebSocketConnectionError::Transport => (
+            ObservedWebSocketStage::Connect,
+            ObservedWebSocketReason::Transport,
+        ),
+        WebSocketConnectionError::Handshake => (
+            ObservedWebSocketStage::Handshake,
+            ObservedWebSocketReason::Handshake,
+        ),
+    };
+    WebSocketProxyError::UpstreamConnect(WebSocketFailure::upstream(stage, reason))
+}
+
+fn relay_transport_error(
+    direction: ObservedWebSocketDirection,
+    reason: ObservedWebSocketReason,
+) -> WebSocketProxyError {
+    let failure = match direction {
+        ObservedWebSocketDirection::Downstream => {
+            WebSocketFailure::downstream(ObservedWebSocketStage::Relay, reason)
+        }
+        ObservedWebSocketDirection::Upstream => {
+            WebSocketFailure::upstream(ObservedWebSocketStage::Relay, reason)
+        }
+    };
+    WebSocketProxyError::Transport(failure)
 }
 
 async fn receive_first_message(
@@ -393,9 +564,15 @@ async fn receive_first_message(
                 Duration::from_millis(state.websocket_idle_timeout_ms),
                 downstream.next(),
             ) => message
-                .map_err(|_| WebSocketProxyError::IdleTimeout)?
-                .ok_or(WebSocketProxyError::Transport)?
-                .map_err(|_| WebSocketProxyError::Transport)?,
+                .map_err(|_| WebSocketProxyError::IdleTimeout(WebSocketFailure::downstream(
+                    ObservedWebSocketStage::FirstMessage,
+                    ObservedWebSocketReason::Timeout,
+                )))?
+                .ok_or(WebSocketProxyError::ClientClosed)?
+                .map_err(|_| WebSocketProxyError::Transport(WebSocketFailure::downstream(
+                    ObservedWebSocketStage::FirstMessage,
+                    ObservedWebSocketReason::Transport,
+                )))?,
         };
         match message {
             Message::Text(text) => {
@@ -404,12 +581,14 @@ async fn receive_first_message(
                 return Ok(Message::Text(text));
             }
             Message::Ping(_) | Message::Pong(_) => {
-                downstream
-                    .flush()
-                    .await
-                    .map_err(|_| WebSocketProxyError::Transport)?;
+                downstream.flush().await.map_err(|_| {
+                    WebSocketProxyError::Transport(WebSocketFailure::downstream(
+                        ObservedWebSocketStage::FirstMessage,
+                        ObservedWebSocketReason::Transport,
+                    ))
+                })?;
             }
-            Message::Close(_) => return Err(WebSocketProxyError::Transport),
+            Message::Close(_) => return Err(WebSocketProxyError::ClientClosed),
             Message::Binary(_) | Message::Frame(_) => {
                 return Err(WebSocketProxyError::InvalidFirstMessage);
             }
@@ -422,6 +601,7 @@ fn prepare_first_message(
     message: Message,
     request_headers: &HeaderMap,
     state: &EgressState,
+    session_id: u64,
 ) -> Result<PreparedFirstMessage, WebSocketProxyError> {
     let Message::Text(text) = message else {
         return Err(WebSocketProxyError::InvalidFirstMessage);
@@ -435,6 +615,7 @@ fn prepare_first_message(
     state.observe(EgressEvent::RequestObserved(RequestObserved {
         transport: ObservedTransport::WebSocket,
         path: "/v1/responses".to_owned(),
+        session_id: Some(session_id),
         sequence: 1,
         model: inspected.model.clone(),
         route: observed_route.clone(),
@@ -510,12 +691,11 @@ fn prepare_first_message(
     }
 }
 
+#[allow(clippy::too_many_lines)] // Keep both relay directions and their failure classification together.
 async fn relay(
     downstream: &mut DownstreamSocket,
     upstream: &mut UpstreamSocket,
-    runtime: Arc<crate::state::EgressRuntimeSnapshot>,
-    route: SessionRoute,
-    codex_turn_metadata_header_present: bool,
+    context: DirectRelayContext,
     state: &EgressState,
     shutdown: &mut watch::Receiver<WebSocketShutdown>,
 ) -> Result<(), WebSocketProxyError> {
@@ -524,6 +704,12 @@ async fn relay(
         Upstream(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
     }
 
+    let DirectRelayContext {
+        runtime,
+        route,
+        codex_turn_metadata_header_present,
+        session_id,
+    } = context;
     let mut request_sequence = 1;
     let mut request_in_flight = true;
     loop {
@@ -541,7 +727,9 @@ async fn relay(
                         message = upstream.next() => Event::Upstream(message),
                     }
                 },
-            ) => event.map_err(|_| WebSocketProxyError::IdleTimeout)?,
+            ) => event.map_err(|_| WebSocketProxyError::IdleTimeout(WebSocketFailure::undirected(
+                ObservedWebSocketStage::Relay, ObservedWebSocketReason::Timeout,
+            )))?,
         };
 
         match event {
@@ -560,6 +748,7 @@ async fn relay(
                     &mut request_sequence,
                     codex_turn_metadata_header_present,
                     &runtime,
+                    session_id,
                     state,
                 ) {
                     Ok(message) => message,
@@ -603,14 +792,29 @@ async fn relay(
                     }
                 }
             }
-            Event::Downstream(Some(Err(_)) | None) => {
+            Event::Downstream(None) => {
                 let _ = upstream
                     .send(close_message(CloseCode::Away, "client closed"))
                     .await;
                 return Ok(());
             }
-            Event::Upstream(Some(Err(_)) | None) => {
-                return Err(WebSocketProxyError::Transport);
+            Event::Downstream(Some(Err(_))) => {
+                return Err(relay_transport_error(
+                    ObservedWebSocketDirection::Downstream,
+                    ObservedWebSocketReason::Transport,
+                ));
+            }
+            Event::Upstream(Some(Err(_))) => {
+                return Err(relay_transport_error(
+                    ObservedWebSocketDirection::Upstream,
+                    ObservedWebSocketReason::Transport,
+                ));
+            }
+            Event::Upstream(None) => {
+                return Err(relay_transport_error(
+                    ObservedWebSocketDirection::Upstream,
+                    ObservedWebSocketReason::UnexpectedEof,
+                ));
             }
         }
     }
@@ -634,8 +838,14 @@ async fn send_upstream(
             Duration::from_millis(idle_timeout_ms),
             upstream.send(message),
         ) => result
-            .map_err(|_| WebSocketProxyError::IdleTimeout)?
-            .map_err(|_| WebSocketProxyError::Transport),
+            .map_err(|_| WebSocketProxyError::IdleTimeout(WebSocketFailure::upstream(
+                ObservedWebSocketStage::Relay,
+                ObservedWebSocketReason::Timeout,
+            )))?
+            .map_err(|_| WebSocketProxyError::Transport(WebSocketFailure::upstream(
+                ObservedWebSocketStage::Relay,
+                ObservedWebSocketReason::Transport,
+            ))),
     }
 }
 
@@ -651,8 +861,14 @@ async fn send_downstream(
             Duration::from_millis(idle_timeout_ms),
             downstream.send(message),
         ) => result
-            .map_err(|_| WebSocketProxyError::IdleTimeout)?
-            .map_err(|_| WebSocketProxyError::Transport),
+            .map_err(|_| WebSocketProxyError::IdleTimeout(WebSocketFailure::downstream(
+                ObservedWebSocketStage::Relay,
+                ObservedWebSocketReason::Timeout,
+            )))?
+            .map_err(|_| WebSocketProxyError::Transport(WebSocketFailure::downstream(
+                ObservedWebSocketStage::Relay,
+                ObservedWebSocketReason::Transport,
+            ))),
     }
 }
 
@@ -662,6 +878,7 @@ fn prepare_followup_message(
     request_sequence: &mut u64,
     codex_turn_metadata_header_present: bool,
     runtime: &crate::state::EgressRuntimeSnapshot,
+    session_id: u64,
     state: &EgressState,
 ) -> Result<Message, WebSocketProxyError> {
     let Message::Text(text) = message else {
@@ -679,6 +896,7 @@ fn prepare_followup_message(
     state.observe(EgressEvent::RequestObserved(RequestObserved {
         transport: ObservedTransport::WebSocket,
         path: "/v1/responses".to_owned(),
+        session_id: Some(session_id),
         sequence: *request_sequence,
         model: inspected.model.clone(),
         route: ObservedRoute::from(&decision),

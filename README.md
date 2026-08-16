@@ -45,7 +45,8 @@ configured provider.
 - Manage provider settings, model visibility and capabilities, Codex integration, launch at login,
   and English or Simplified Chinese UI from a native GPUI settings window.
 - Respect `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` for upstream connections.
-- Record redacted runtime and request errors in private daily local logs with 10-day retention.
+- Record redacted request routing, upstream responses, and runtime errors in private daily local
+  logs with 10-day retention.
 
 ### Planned
 
@@ -170,14 +171,17 @@ restrictive permissions, regular-file checks, atomic writes, and concurrent-chan
 integration updates only its managed settings in `~/.codex/config.toml` and preserves unrelated
 configuration.
 
-Redacted runtime and request errors are written as JSON Lines to
+Redacted request routing, upstream responses, and runtime errors are written as JSON Lines to
 `logs/provider-x-YYYY-MM-DD.log`. Files rotate on the Mac's local calendar date, and ProviderX keeps
-the current day plus the previous nine days. Error records contain diagnostic fields such as the
-request method, path without its query string, ingress-authorization result, status, and stable
-error code. Unauthorized paths are retained in full unless the first segment has the canonical
+the current day plus the previous nine days. Every record contains the app version, process run ID,
+and level. WebSocket records also contain a session ID that correlates requests, upstream
+handshakes, and failures. Error records contain diagnostic fields such as the request method, path
+without its query string, ingress-authorization result, status, and stable error code. WebSocket
+errors also identify the direct or HTTP-bridge mode, route, failure stage, direction, and sanitized
+reason category. Unauthorized paths are retained in full unless the first segment has the canonical
 64-character capability shape; only that segment is replaced with `<redacted-capability>`. Logs do
-not contain raw authorization data, ingress capabilities, request or response bodies, or original
-Codex configuration contents.
+not contain raw authorization data, ingress capabilities, request or response bodies, raw upstream
+error text, or original Codex configuration contents.
 
 Do not publish either directory or include its contents in issue reports.
 

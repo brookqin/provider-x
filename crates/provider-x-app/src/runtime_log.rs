@@ -9,10 +9,11 @@ use std::{
         mpsc,
     },
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::{Days, Local, NaiveDate, SecondsFormat};
-use provider_x_egress::{EgressEvent, EgressObserver, ErrorObserved};
+use provider_x_egress::{EgressEvent, EgressObserver};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -47,18 +48,77 @@ pub(crate) enum RuntimeLogError {
 enum LogEntry {
     Egress {
         #[serde(flatten)]
-        error: ErrorObserved,
+        event: EgressEvent,
     },
     Runtime {
+        #[serde(skip)]
+        level: LogLevel,
         code: String,
         message: String,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl LogEntry {
+    const fn level(&self) -> LogLevel {
+        match self {
+            Self::Egress {
+                event: EgressEvent::RequestObserved(_) | EgressEvent::UpstreamObserved(_),
+            } => LogLevel::Info,
+            Self::Egress {
+                event: EgressEvent::FallbackObserved(_),
+            } => LogLevel::Warn,
+            Self::Egress {
+                event: EgressEvent::ErrorObserved(_),
+            } => LogLevel::Error,
+            Self::Runtime { level, .. } => *level,
+        }
+    }
+}
+
+struct LogContext {
+    app_version: &'static str,
+    process_id: u32,
+    run_id: String,
+}
+
+impl LogContext {
+    fn current() -> Self {
+        let process_id = std::process::id();
+        let started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        Self {
+            app_version: env!("CARGO_PKG_VERSION"),
+            process_id,
+            run_id: format!("{process_id}-{started_at}"),
+        }
+    }
 }
 
 #[derive(Serialize)]
 struct LogRecord<'a> {
     timestamp: &'a str,
     level: &'static str,
+    app_version: &'static str,
+    process_id: u32,
+    run_id: &'a str,
     #[serde(flatten)]
     entry: &'a LogEntry,
 }
@@ -79,15 +139,22 @@ impl RuntimeLog {
             .name("provider-x-log".to_owned())
             .spawn(move || run_worker(writer, &receiver, &worker_dropped))
             .map_err(RuntimeLogError::Worker)?;
-        Ok(Arc::new(Self {
+        let logger = Arc::new(Self {
             sender: Mutex::new(Some(sender)),
             worker: Mutex::new(Some(worker)),
             dropped,
-        }))
+        });
+        logger.send(LogEntry::Runtime {
+            level: LogLevel::Info,
+            code: "app_started".to_owned(),
+            message: "ProviderX runtime logging started".to_owned(),
+        });
+        Ok(logger)
     }
 
     pub(crate) fn record_runtime_error(&self, code: &str, message: &str) {
         self.send(LogEntry::Runtime {
+            level: LogLevel::Error,
             code: code.to_owned(),
             message: message.to_owned(),
         });
@@ -107,9 +174,7 @@ impl RuntimeLog {
 
 impl EgressObserver for RuntimeLog {
     fn record(&self, event: EgressEvent) {
-        if let EgressEvent::ErrorObserved(error) = event {
-            self.send(LogEntry::Egress { error });
-        }
+        self.send(LogEntry::Egress { event });
     }
 }
 
@@ -148,8 +213,9 @@ fn write_dropped_marker(writer: &mut DailyLogWriter, dropped: &AtomicU64) {
         write_entry(
             writer,
             &LogEntry::Runtime {
+                level: LogLevel::Error,
                 code: "log_events_dropped".to_owned(),
-                message: format!("{dropped} error log events were dropped during a burst"),
+                message: format!("{dropped} diagnostic log events were dropped during a burst"),
             },
         );
     }
@@ -167,6 +233,7 @@ struct DailyLogWriter {
     directory: PathBuf,
     date: NaiveDate,
     file: File,
+    context: LogContext,
 }
 
 impl DailyLogWriter {
@@ -178,6 +245,7 @@ impl DailyLogWriter {
             directory: directory.to_path_buf(),
             date,
             file,
+            context: LogContext::current(),
         })
     }
 
@@ -194,7 +262,10 @@ impl DailyLogWriter {
         }
         let mut bytes = serde_json::to_vec(&LogRecord {
             timestamp,
-            level: "error",
+            level: entry.level().as_str(),
+            app_version: self.context.app_version,
+            process_id: self.context.process_id,
+            run_id: &self.context.run_id,
             entry,
         })?;
         bytes.push(b'\n');
@@ -292,11 +363,12 @@ mod tests {
 
     use chrono::{Local, NaiveDate};
     use provider_x_egress::{
-        EgressEvent, EgressObserver, ErrorObserved, FallbackObserved, ObservedTransport,
+        EgressEvent, EgressObserver, ErrorObserved, FallbackObserved, ObservedRoute,
+        ObservedTransport, RequestObserved, UpstreamObserved,
     };
 
     use super::{
-        DailyLogWriter, LogEntry, RuntimeLog, RuntimeLogError, log_path, open_log_file,
+        DailyLogWriter, LogEntry, LogLevel, RuntimeLog, RuntimeLogError, log_path, open_log_file,
         write_dropped_marker,
     };
 
@@ -314,6 +386,7 @@ mod tests {
                 date("2026-08-01"),
                 "2026-08-01T23:59:59+08:00",
                 &LogEntry::Runtime {
+                    level: LogLevel::Info,
                     code: "first".to_owned(),
                     message: "first day".to_owned(),
                 },
@@ -324,6 +397,7 @@ mod tests {
                 date("2026-08-02"),
                 "2026-08-02T00:00:01+08:00",
                 &LogEntry::Runtime {
+                    level: LogLevel::Info,
                     code: "cutoff".to_owned(),
                     message: "oldest retained day".to_owned(),
                 },
@@ -334,6 +408,7 @@ mod tests {
                 date("2026-08-11"),
                 "2026-08-11T00:00:01+08:00",
                 &LogEntry::Runtime {
+                    level: LogLevel::Info,
                     code: "second".to_owned(),
                     message: "second day".to_owned(),
                 },
@@ -358,11 +433,32 @@ mod tests {
     }
 
     #[test]
-    fn production_observer_writes_only_redacted_error_events() {
+    fn production_observer_writes_correlated_redacted_diagnostic_events() {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("logs");
         let logger = RuntimeLog::start(&directory).unwrap();
         let observer: Arc<dyn EgressObserver> = logger.clone();
+        observer.record(EgressEvent::RequestObserved(RequestObserved {
+            transport: ObservedTransport::WebSocket,
+            path: "/v1/responses".to_owned(),
+            session_id: Some(17),
+            sequence: 1,
+            model: "provider-a/coder".to_owned(),
+            route: ObservedRoute::ThirdParty {
+                provider_id: "provider-a".to_owned(),
+            },
+            previous_response_id_present: false,
+            client_metadata_present: true,
+            codex_turn_metadata_header_present: true,
+        }));
+        observer.record(EgressEvent::UpstreamObserved(UpstreamObserved {
+            transport: ObservedTransport::Http,
+            session_id: Some(17),
+            route: ObservedRoute::ThirdParty {
+                provider_id: "provider-a".to_owned(),
+            },
+            status: 200,
+        }));
         observer.record(EgressEvent::FallbackObserved(FallbackObserved {
             transport: ObservedTransport::WebSocket,
             path: "/v1/responses".to_owned(),
@@ -376,6 +472,7 @@ mod tests {
             status: Some(502),
             code: "upstream_connect_failed".to_owned(),
             message: "failed to connect to upstream".to_owned(),
+            websocket: None,
         }));
         drop(observer);
         drop(logger);
@@ -383,7 +480,12 @@ mod tests {
         let content = fs::read_to_string(log_path(&directory, Local::now().date_naive())).unwrap();
         assert!(content.contains("upstream_connect_failed"));
         assert!(content.contains("\"level\":\"error\""));
-        assert_eq!(content.lines().count(), 1);
+        assert!(content.contains("\"level\":\"info\""));
+        assert!(content.contains("\"level\":\"warn\""));
+        assert!(content.contains("\"app_version\":\""));
+        assert!(content.contains("\"run_id\":\""));
+        assert!(content.contains("\"session_id\":17"));
+        assert_eq!(content.lines().count(), 5);
         assert!(!content.contains("authorization"));
         assert!(!content.contains("request_body"));
         assert!(!content.contains("response_body"));
@@ -428,6 +530,6 @@ mod tests {
 
         let content = fs::read_to_string(log_path(&directory, today)).unwrap();
         assert!(content.contains("log_events_dropped"));
-        assert!(content.contains("3 error log events"));
+        assert!(content.contains("3 diagnostic log events"));
     }
 }
