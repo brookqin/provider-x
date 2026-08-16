@@ -1,3 +1,4 @@
+mod anthropic_http_bridge;
 mod chat_http_bridge;
 mod error;
 mod events;

@@ -13,6 +13,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 pin-project-lite.workspace = true
+protocol-anthropic-messages = { path = "../protocol-anthropic-messages" }
 protocol-openai-responses = { path = "../protocol-openai-responses" }
 protocol-openai-chat-completions = { path = "../protocol-openai-chat-completions" }
 provider-x-catalog = { path = "../provider-x-catalog" }

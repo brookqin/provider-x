@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use hyper::{HeaderMap, header, header::HeaderValue};
-use provider_x_core::AuthConfig;
+use provider_x_core::{AuthConfig, ProtocolId};
 
 use crate::ProxyError;
 
@@ -34,6 +34,7 @@ pub(crate) fn official_model_catalog_headers(source: &HeaderMap) -> HeaderMap {
 pub(crate) fn third_party_request_headers(
     source: &HeaderMap,
     auth: &AuthConfig,
+    protocol: ProtocolId,
 ) -> Result<HeaderMap, ProxyError> {
     let connection_headers = connection_headers(source);
     let mut destination: HeaderMap = source
@@ -53,9 +54,15 @@ pub(crate) fn third_party_request_headers(
 
     match auth {
         AuthConfig::Bearer { api_key } => {
-            let value = format!("Bearer {api_key}");
-            let value = HeaderValue::from_str(&value).map_err(|_| ProxyError::RequestBuild)?;
-            destination.insert(header::AUTHORIZATION, value);
+            if protocol == ProtocolId::AnthropicMessages {
+                let value = HeaderValue::from_str(api_key).map_err(|_| ProxyError::RequestBuild)?;
+                destination.insert("x-api-key", value);
+                destination.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            } else {
+                let value = format!("Bearer {api_key}");
+                let value = HeaderValue::from_str(&value).map_err(|_| ProxyError::RequestBuild)?;
+                destination.insert(header::AUTHORIZATION, value);
+            }
         }
     }
     Ok(destination)
@@ -96,8 +103,9 @@ pub(crate) fn official_websocket_headers(source: &HeaderMap) -> HeaderMap {
 pub(crate) fn third_party_websocket_headers(
     source: &HeaderMap,
     auth: &AuthConfig,
+    protocol: ProtocolId,
 ) -> Result<HeaderMap, ProxyError> {
-    let mut headers = third_party_request_headers(source, auth)?;
+    let mut headers = third_party_request_headers(source, auth, protocol)?;
     remove_websocket_handshake_headers(&mut headers);
     Ok(headers)
 }
@@ -152,7 +160,7 @@ fn is_sensitive_official_header(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use hyper::{HeaderMap, header::HeaderValue};
-    use provider_x_core::AuthConfig;
+    use provider_x_core::{AuthConfig, ProtocolId};
 
     use super::{
         official_model_catalog_headers, official_request_headers, rewritten_response_headers,
@@ -187,6 +195,7 @@ mod tests {
             &AuthConfig::Bearer {
                 api_key: "third-party".to_owned(),
             },
+            ProtocolId::OpenaiChatCompletions,
         )
         .unwrap();
         assert_eq!(result["authorization"], "Bearer third-party");
@@ -194,6 +203,23 @@ mod tests {
         assert!(!result.contains_key("content-encoding"));
         assert!(!result.contains_key("chatgpt-account-id"));
         assert!(!result.contains_key("x-openai-attestation"));
+    }
+
+    #[test]
+    fn anthropic_uses_api_key_and_version_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer official"));
+        let result = third_party_request_headers(
+            &headers,
+            &AuthConfig::Bearer {
+                api_key: "anthropic-secret".to_owned(),
+            },
+            ProtocolId::AnthropicMessages,
+        )
+        .unwrap();
+        assert!(!result.contains_key("authorization"));
+        assert_eq!(result["x-api-key"], "anthropic-secret");
+        assert_eq!(result["anthropic-version"], "2023-06-01");
     }
 
     #[test]

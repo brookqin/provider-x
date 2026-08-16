@@ -34,6 +34,16 @@ pub struct CodexConfig {
 pub struct EndpointConfig {
     pub http: String,
     pub websocket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicThinkingMode {
+    #[default]
+    Adaptive,
+    Enabled,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,12 +92,19 @@ pub struct ProviderConfig {
     pub description: Option<String>,
     pub enabled: bool,
     pub protocol: ProtocolId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_thinking: Option<AnthropicThinkingMode>,
     pub endpoints: EndpointConfig,
     pub auth: AuthConfig,
     pub transports: TransportConfig,
 }
 
 impl ProviderConfig {
+    #[must_use]
+    pub fn anthropic_thinking_mode(&self) -> AnthropicThinkingMode {
+        self.anthropic_thinking.unwrap_or_default()
+    }
+
     /// Validates credentials, endpoints, and declared transport capabilities.
     ///
     /// # Errors
@@ -114,6 +131,16 @@ impl ProviderConfig {
                 provider_id: self.id.to_string(),
             });
         }
+        if self
+            .endpoints
+            .models
+            .as_deref()
+            .is_some_and(|endpoint| !is_absolute_http_url(endpoint))
+        {
+            return Err(CoreError::InvalidModelListEndpoint {
+                provider_id: self.id.to_string(),
+            });
+        }
         if self.transports.websocket && self.endpoints.websocket.is_none() {
             return Err(CoreError::MissingWebSocketEndpoint {
                 provider_id: self.id.to_string(),
@@ -126,11 +153,18 @@ impl ProviderConfig {
                 provider_id: self.id.to_string(),
             });
         }
-        if self.protocol == ProtocolId::OpenaiChatCompletions
-            && (self.transports.websocket || self.endpoints.websocket.is_some())
+        if matches!(
+            self.protocol,
+            ProtocolId::OpenaiChatCompletions | ProtocolId::AnthropicMessages
+        ) && (self.transports.websocket || self.endpoints.websocket.is_some())
         {
-            return Err(CoreError::ChatCompletionsWebSocketUnsupported {
+            return Err(CoreError::ProtocolWebSocketUnsupported {
                 provider_id: self.id.to_string(),
+                protocol: match self.protocol {
+                    ProtocolId::OpenaiChatCompletions => "OpenAI Chat Completions",
+                    ProtocolId::AnthropicMessages => "Anthropic Messages",
+                    ProtocolId::OpenaiResponses => unreachable!(),
+                },
             });
         }
         Ok(())

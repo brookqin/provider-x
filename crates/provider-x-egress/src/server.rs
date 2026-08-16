@@ -429,10 +429,10 @@ async fn proxy(
         codex_turn_metadata_header_present: parts.headers.contains_key("x-codex-turn-metadata"),
     }));
 
-    let (base_url, direct_uri, headers, body, chat_tool_names, client) = match decision {
+    let (base_url, converted_protocol, headers, body, tool_names, client) = match decision {
         RouteDecision::BuiltInOfficial => (
             state.official_base_url.to_string(),
-            false,
+            None,
             official_request_headers(&parts.headers),
             original_body,
             None,
@@ -446,7 +446,7 @@ async fn proxy(
             let provider = runtime
                 .provider(&provider_id)
                 .ok_or(ProxyError::ProviderNotAvailable)?;
-            let (base_url, body, chat_tool_names) = match provider.config.protocol {
+            let (base_url, body, tool_names) = match provider.config.protocol {
                 ProtocolId::OpenaiResponses => (
                     provider.config.endpoints.http.clone(),
                     rewrite_http_model(&decoded_body, upstream_model_id.as_str())
@@ -468,19 +468,39 @@ async fn proxy(
                         Some(request.tool_names),
                     )
                 }
+                ProtocolId::AnthropicMessages => {
+                    let request =
+                        protocol_anthropic_messages::prepare_http_request_with_thinking_mode(
+                            &decoded_body,
+                            upstream_model_id.as_str(),
+                            state.request_body_limit_bytes,
+                            provider.config.anthropic_thinking_mode(),
+                        )
+                        .map_err(|error| ProxyError::InvalidRequest(error.to_string()))?;
+                    (
+                        protocol_anthropic_messages::messages_url(&provider.config.endpoints.http),
+                        request.body,
+                        Some(request.tool_names),
+                    )
+                }
             };
             (
                 base_url,
-                provider.config.protocol == ProtocolId::OpenaiChatCompletions,
-                third_party_request_headers(&parts.headers, &provider.config.auth)?,
+                (provider.config.protocol != ProtocolId::OpenaiResponses)
+                    .then_some(provider.config.protocol),
+                third_party_request_headers(
+                    &parts.headers,
+                    &provider.config.auth,
+                    provider.config.protocol,
+                )?,
                 body,
-                chat_tool_names,
+                tool_names,
                 &provider.client,
             )
         }
     };
 
-    let uri = if direct_uri {
+    let uri = if converted_protocol.is_some() {
         base_url
             .parse()
             .map_err(|_| ProxyError::InvalidUpstreamUri)?
@@ -507,24 +527,36 @@ async fn proxy(
         status: response.status().as_u16(),
     }));
     let (parts, body) = response.into_parts();
-    let downstream_body = if direct_uri && parts.status.is_success() {
-        let decoder = protocol_openai_chat_completions::ChatSseDecoder::with_tool_names(
-            state.request_body_limit_bytes,
-            chat_tool_names.unwrap_or_default(),
-        );
-        crate::chat_http_bridge::ChatCompletionBody::new(
-            body,
-            decoder,
-            Duration::from_millis(state.stream_idle_timeout_ms),
-        )
-        .boxed()
-    } else {
-        IdleTimeoutBody::new(body, Duration::from_millis(state.stream_idle_timeout_ms)).boxed()
+    let stream_timeout = Duration::from_millis(state.stream_idle_timeout_ms);
+    let rewrites_success_body = converted_protocol.is_some() && parts.status.is_success();
+    let downstream_body = match converted_protocol.filter(|_| parts.status.is_success()) {
+        Some(ProtocolId::OpenaiChatCompletions) => {
+            let decoder = protocol_openai_chat_completions::ChatSseDecoder::with_tool_names(
+                state.request_body_limit_bytes,
+                tool_names.unwrap_or_default(),
+            );
+            crate::chat_http_bridge::ChatCompletionBody::new(body, decoder, stream_timeout).boxed()
+        }
+        Some(ProtocolId::AnthropicMessages) => {
+            let decoder = protocol_anthropic_messages::AnthropicSseDecoder::with_tool_names(
+                state.request_body_limit_bytes,
+                tool_names.unwrap_or_default(),
+            );
+            crate::anthropic_http_bridge::AnthropicMessageBody::new(body, decoder, stream_timeout)
+                .boxed()
+        }
+        Some(ProtocolId::OpenaiResponses) | None => {
+            IdleTimeoutBody::new(body, stream_timeout).boxed()
+        }
     };
     let mut downstream = Response::new(downstream_body);
     *downstream.status_mut() = parts.status;
     *downstream.version_mut() = parts.version;
-    *downstream.headers_mut() = response_headers(&parts.headers);
+    *downstream.headers_mut() = if rewrites_success_body {
+        rewritten_response_headers(&parts.headers)
+    } else {
+        response_headers(&parts.headers)
+    };
     Ok(downstream)
 }
 

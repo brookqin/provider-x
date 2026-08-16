@@ -109,8 +109,8 @@ app:
     about: 关于
     version: 版本
     description_title: 功能说明
-    description: 支持 OpenAI Responses 与 Chat Completions 协议，并为 Codex / ChatGPT app
-      扩展第三方模型目录。
+    description: 支持 OpenAI Responses、Chat Completions 与 Anthropic Messages 协议，并为
+      Codex / ChatGPT app 扩展第三方模型目录。
     launch_requires_approval: 已提交开机运行请求；请在系统设置的登录项中允许 ProviderX。
     launch_enabled: ProviderX 将在登录 macOS 后自动运行。
     launch_disabled: 已关闭开机自动运行。

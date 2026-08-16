@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 
 use provider_x_core::{
-    AuthConfig, CatalogModelId, CodexConfig, EndpointConfig, ListenerConfig, ModelCacheDocument,
-    ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache,
-    ProviderModelSource, ProviderModelSpec, ProvidersDocument, RouteDecision, RouteResolver,
-    RuntimeSnapshot, TimeoutConfig, TransportConfig,
+    AnthropicThinkingMode, AuthConfig, CatalogModelId, CodexConfig, EndpointConfig, ListenerConfig,
+    ModelCacheDocument, ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig, ProviderId,
+    ProviderModelCache, ProviderModelSource, ProviderModelSpec, ProvidersDocument, RouteDecision,
+    RouteResolver, RuntimeSnapshot, TimeoutConfig, TransportConfig,
 };
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 const PROVIDERS_YAML: &str = r"
 schema_version: 1
@@ -47,9 +49,11 @@ fn provider(id: &str, enabled: bool) -> ProviderConfig {
         description: None,
         enabled,
         protocol: ProtocolId::OpenaiResponses,
+        anthropic_thinking: None,
         endpoints: EndpointConfig {
             http: format!("https://{id}.example/v1"),
             websocket: None,
+            models: None,
         },
         auth: AuthConfig::Bearer {
             api_key: "secret".to_owned(),
@@ -205,6 +209,70 @@ fn fingerprint_does_not_change_when_api_key_rotates() {
 }
 
 #[test]
+fn missing_model_endpoint_preserves_the_legacy_routing_fingerprint() {
+    #[derive(Serialize)]
+    struct LegacyEndpoint<'a> {
+        http: &'a str,
+        websocket: Option<&'a str>,
+    }
+    #[derive(Serialize)]
+    struct LegacyFingerprint<'a> {
+        protocol: ProtocolId,
+        endpoints: LegacyEndpoint<'a>,
+        auth_mode: &'static str,
+        transports: &'a TransportConfig,
+    }
+
+    let configured = provider("provider-a", true);
+    let legacy = serde_json::to_vec(&LegacyFingerprint {
+        protocol: configured.protocol,
+        endpoints: LegacyEndpoint {
+            http: &configured.endpoints.http,
+            websocket: configured.endpoints.websocket.as_deref(),
+        },
+        auth_mode: "bearer",
+        transports: &configured.transports,
+    })
+    .unwrap();
+    let legacy = format!("sha256:{}", hex::encode(Sha256::digest(legacy)));
+    assert_eq!(configured.routing_fingerprint().unwrap(), legacy);
+    let mut cache = ModelCacheDocument {
+        schema_version: 1,
+        providers: BTreeMap::from([(
+            configured.id.clone(),
+            cached_provider(&configured, &[("coder", ModelPublicationStatus::Ready)]),
+        )]),
+    };
+    cache
+        .providers
+        .get_mut(&configured.id)
+        .unwrap()
+        .config_fingerprint
+        .clone_from(&legacy);
+    RuntimeSnapshot::build(&document(vec![configured.clone()]), &cache)
+        .expect("legacy cache fingerprint must remain valid after upgrade");
+
+    let mut overridden = configured;
+    overridden.endpoints.models = Some("https://provider-a.example/models".to_owned());
+    assert_ne!(overridden.routing_fingerprint().unwrap(), legacy);
+}
+
+#[test]
+fn anthropic_thinking_defaults_to_adaptive_and_can_select_enabled() {
+    let mut configured = provider("provider-a", false);
+    configured.protocol = ProtocolId::AnthropicMessages;
+    assert_eq!(
+        configured.anthropic_thinking_mode(),
+        AnthropicThinkingMode::Adaptive
+    );
+    configured.anthropic_thinking = Some(AnthropicThinkingMode::Enabled);
+    assert_eq!(
+        configured.anthropic_thinking_mode(),
+        AnthropicThinkingMode::Enabled
+    );
+}
+
+#[test]
 fn provider_yaml_round_trip_validates_typed_ids() {
     let parsed = ProvidersDocument::from_yaml(PROVIDERS_YAML).unwrap();
     assert_eq!(parsed.providers[0].id.as_str(), "compatible-primary");
@@ -230,6 +298,25 @@ fn chat_completions_provider_is_protocol_typed_and_http_only() {
         parsed.providers[0].protocol,
         ProtocolId::OpenaiChatCompletions
     );
+
+    let invalid = yaml
+        .replace("websocket: null", "websocket: wss://gateway.example.com/v1")
+        .replace("websocket: false", "websocket: true");
+    let error = ProvidersDocument::from_yaml(&invalid).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("has no native WebSocket transport")
+    );
+}
+
+#[test]
+fn anthropic_provider_is_protocol_typed_and_http_only() {
+    let yaml = PROVIDERS_YAML
+        .replace("openai_responses", "anthropic_messages")
+        .replace("Compatible Primary", "Anthropic Primary");
+    let parsed = ProvidersDocument::from_yaml(&yaml).unwrap();
+    assert_eq!(parsed.providers[0].protocol, ProtocolId::AnthropicMessages);
 
     let invalid = yaml
         .replace("websocket: null", "websocket: wss://gateway.example.com/v1")

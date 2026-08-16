@@ -183,6 +183,7 @@ pub enum ProtocolId {
     #[default]
     OpenaiResponses,
     OpenaiChatCompletions,
+    AnthropicMessages,
 }
 
 /// Protocol-neutral result of a Provider's explicit model-list request.

@@ -286,9 +286,11 @@ mod tests {
             description: None,
             enabled: true,
             protocol: ProtocolId::OpenaiResponses,
+            anthropic_thinking: None,
             endpoints: EndpointConfig {
                 http: endpoint.to_owned(),
                 websocket: None,
+                models: None,
             },
             auth: AuthConfig::Bearer {
                 api_key: "secret".to_owned(),

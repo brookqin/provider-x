@@ -22,8 +22,8 @@ use provider_x_catalog::{
     update_model_capabilities,
 };
 use provider_x_core::{
-    AuthConfig, EndpointConfig, ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig,
-    ProviderId, ProviderModelSpec, TransportConfig,
+    AnthropicThinkingMode, AuthConfig, EndpointConfig, ModelId, ModelPublicationStatus, ProtocolId,
+    ProviderConfig, ProviderId, ProviderModelSpec, TransportConfig,
 };
 
 use crate::codex_config::{CodexConfigStatus, ReceiptPhase};
@@ -43,6 +43,7 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEEPSEEK_PROVIDER: &str = "DeepSeek";
 const RESPONSES_PROTOCOL: &str = "Responses";
 const CHAT_COMPLETIONS_PROTOCOL: &str = "Chat Completions";
+const ANTHROPIC_MESSAGES_PROTOCOL: &str = "Anthropic Messages";
 const GITHUB_URL: &str = "https://github.com/brookqin/provider-x";
 const REFRESH_MODELS_ICON_PATH: &str = "provider-x/refresh-models.svg";
 const SETTINGS_APP_ICON_LIGHT_PATH: &str = "provider-x/app-icon-light.png";
@@ -647,20 +648,14 @@ impl SettingsView {
                 }
             },
         );
-        let protocol_subscription = cx.subscribe(
+        let protocol_subscription = cx.subscribe_in(
             &protocol_select,
-            |view, _, event: &SelectEvent<Vec<&'static str>>, cx| {
+            window,
+            |view, _, event: &SelectEvent<Vec<&'static str>>, window, cx| {
                 let SelectEvent::Confirm(Some(protocol)) = event else {
                     return;
                 };
-                view.protocol = if *protocol == CHAT_COMPLETIONS_PROTOCOL {
-                    view.websocket_enabled = false;
-                    ProtocolId::OpenaiChatCompletions
-                } else {
-                    ProtocolId::OpenaiResponses
-                };
-                view.preview = None;
-                cx.notify();
+                view.apply_protocol_selection(protocol, window, cx);
             },
         );
         let view = Self {
@@ -714,6 +709,33 @@ impl SettingsView {
         language_subscription.detach();
         protocol_subscription.detach();
         view
+    }
+
+    fn apply_protocol_selection(
+        &mut self,
+        protocol: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.protocol = match protocol {
+            CHAT_COMPLETIONS_PROTOCOL => ProtocolId::OpenaiChatCompletions,
+            ANTHROPIC_MESSAGES_PROTOCOL => ProtocolId::AnthropicMessages,
+            _ => ProtocolId::OpenaiResponses,
+        };
+        if self.protocol != ProtocolId::OpenaiResponses {
+            self.websocket_enabled = false;
+        }
+        if self.provider_template == ProviderTemplate::DeepSeek {
+            let endpoint = if self.protocol == ProtocolId::AnthropicMessages {
+                "https://api.deepseek.com/anthropic"
+            } else {
+                "https://api.deepseek.com"
+            };
+            self.http_url
+                .update(cx, |input, cx| input.set_value(endpoint, window, cx));
+        }
+        self.preview = None;
+        cx.notify();
     }
 
     fn set_ui_locale(&mut self, locale: UiLocale, window: &mut Window, cx: &mut Context<Self>) {
@@ -873,17 +895,30 @@ impl SettingsView {
             api_key: entered_api_key,
         };
         let enabled = existing.as_ref().is_some_and(|provider| provider.enabled);
+        let anthropic_thinking = (self.protocol == ProtocolId::AnthropicMessages).then(|| {
+            existing
+                .as_ref()
+                .and_then(|provider| provider.anthropic_thinking)
+                .unwrap_or(if self.provider_template == ProviderTemplate::DeepSeek {
+                    AnthropicThinkingMode::Enabled
+                } else {
+                    AnthropicThinkingMode::Adaptive
+                })
+        });
         let provider = ProviderConfig {
             id,
             name,
             description: None,
             enabled,
             protocol: self.protocol,
+            anthropic_thinking,
             endpoints: EndpointConfig {
                 http: self.http_url.read(cx).value().trim().to_owned(),
                 websocket: (self.protocol == ProtocolId::OpenaiResponses
                     && !websocket.trim().is_empty())
                 .then(|| websocket.trim().to_owned()),
+                models: (self.provider_template == ProviderTemplate::DeepSeek)
+                    .then(|| "https://api.deepseek.com/models".to_owned()),
             },
             auth,
             transports: TransportConfig {
@@ -1414,6 +1449,7 @@ impl SettingsView {
         let protocol = match provider.protocol {
             ProtocolId::OpenaiResponses => RESPONSES_PROTOCOL,
             ProtocolId::OpenaiChatCompletions => CHAT_COMPLETIONS_PROTOCOL,
+            ProtocolId::AnthropicMessages => ANTHROPIC_MESSAGES_PROTOCOL,
         };
         self.protocol_select.update(cx, |select, cx| {
             select.set_selected_value(&protocol, window, cx);
@@ -2095,7 +2131,7 @@ impl SettingsView {
                     .child(
                         Switch::new("draft-websocket-enabled")
                             .checked(self.websocket_enabled)
-                            .disabled(busy || self.protocol == ProtocolId::OpenaiChatCompletions)
+                            .disabled(busy || self.protocol != ProtocolId::OpenaiResponses)
                             .on_click(cx.listener(|view, checked, _, cx| {
                                 view.websocket_enabled = *checked;
                                 cx.notify();
@@ -2886,7 +2922,11 @@ fn new_protocol_select(
 ) -> Entity<SelectState<Vec<&'static str>>> {
     cx.new(|cx| {
         SelectState::new(
-            vec![RESPONSES_PROTOCOL, CHAT_COMPLETIONS_PROTOCOL],
+            vec![
+                RESPONSES_PROTOCOL,
+                CHAT_COMPLETIONS_PROTOCOL,
+                ANTHROPIC_MESSAGES_PROTOCOL,
+            ],
             Some(IndexPath::default()),
             window,
             cx,

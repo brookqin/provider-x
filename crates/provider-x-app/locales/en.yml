@@ -118,8 +118,8 @@ app:
     about: About
     version: Version
     description_title: Features
-    description: Supports OpenAI Responses and Chat Completions, and extends the third-party
-      model catalog for Codex / ChatGPT.
+    description: Supports OpenAI Responses, Chat Completions, and Anthropic Messages,
+      and extends the third-party model catalog for Codex / ChatGPT.
     launch_requires_approval: ProviderX was submitted as a login item. Allow it in
       System Settings.
     launch_enabled: ProviderX will start automatically after signing in to macOS.

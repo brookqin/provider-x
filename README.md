@@ -38,6 +38,8 @@ configured provider.
 - Bridge Codex WebSocket sessions to HTTP/SSE for providers without native WebSocket support.
 - Adapt Responses requests, streaming events, tool calls, and bounded session history to OpenAI Chat
   Completions providers.
+- Adapt Responses requests and streams to Anthropic Messages, including signed thinking blocks and
+  stateful tool continuations.
 - Discover provider models explicitly and enrich missing metadata with exact matches from
   [models.dev](https://models.dev/).
 - Manage provider settings, model visibility and capabilities, Codex integration, launch at login,
@@ -47,7 +49,6 @@ configured provider.
 
 ### Planned
 
-- Support the Anthropic protocol.
 - Add provider templates for GLM, KIMI, MiniMax, and other services.
 - Support complete third-party subagent scheduling, including readable task delivery and follow-up
   messages.
@@ -61,6 +62,8 @@ flowchart LR
     B -->|"provider/model + Responses"| D["Responses provider"]
     B -->|"provider/model + Chat Completions"| E["Protocol adapter"]
     E --> F["Chat Completions provider"]
+    B -->|"provider/model + Anthropic Messages"| E
+    E --> G["Anthropic provider"]
 ```
 
 ProviderX configures Codex to use a local URL shaped like
@@ -81,10 +84,11 @@ is expected to refresh.
 | --- | --- | --- | --- |
 | OpenAI Responses | Yes | Optional | Yes, when the provider is HTTP-only |
 | OpenAI Chat Completions | Yes | No | Yes, through the protocol adapter |
+| Anthropic Messages | Yes | No | Yes, through the protocol adapter |
 
-Protocol feature parity still depends on the upstream provider. Unsupported Chat Completions items
-or tools are rejected or deliberately omitted according to the adapter contract rather than being
-silently misrepresented.
+Protocol feature parity still depends on the upstream provider. Unsupported adapter inputs or tools
+are rejected or deliberately omitted according to the protocol contract rather than being silently
+misrepresented.
 
 ## Known Limitations
 
@@ -139,6 +143,19 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 6. Open **Global Settings** and enable **Codex / ChatGPT Desktop Integration**.
 7. Fully quit and restart ChatGPT Desktop, then select a namespaced model such as
    `provider-id/model-id`.
+
+For DeepSeek over Anthropic Messages, choose **Anthropic Messages**. The DeepSeek template sets the
+HTTP base URL to `https://api.deepseek.com/anthropic`; ProviderX appends `/v1/messages`, sends the
+configured key as `x-api-key`, and keeps the key private. Model refresh continues to use DeepSeek's
+compatible `/models` endpoint through the template's typed model-list override. The template also
+sets `anthropic_thinking: enabled`: thinking remains on for normal and tool-continuation turns, and
+signed thinking blocks are returned unchanged. When a forced tool choice conflicts with enabled
+thinking, ProviderX keeps thinking on and expresses the tool requirement as an explicit instruction
+with automatic tool selection instead of disabling thinking.
+
+Custom Anthropic providers default to `anthropic_thinking: adaptive`, which is required by current
+Claude models. Compatible endpoints that implement legacy/manual extended thinking can explicitly
+select `enabled` in the provider document.
 
 When integration is disabled, ProviderX restores the Codex settings it previously managed as long
 as those values have not been changed externally. Keep ProviderX running until active tasks finish,

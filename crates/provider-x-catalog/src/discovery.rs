@@ -78,7 +78,9 @@ impl ManualDiscoveryClient {
             ProtocolId::OpenaiResponses => {
                 self.discover_protocol_models(
                     provider,
-                    protocol_openai_responses::model_list_url(&provider.endpoints.http),
+                    provider.endpoints.models.clone().unwrap_or_else(|| {
+                        protocol_openai_responses::model_list_url(&provider.endpoints.http)
+                    }),
                     protocol_openai_responses::parse_model_list,
                 )
                 .await
@@ -86,8 +88,20 @@ impl ManualDiscoveryClient {
             ProtocolId::OpenaiChatCompletions => {
                 self.discover_protocol_models(
                     provider,
-                    protocol_openai_chat_completions::model_list_url(&provider.endpoints.http),
+                    provider.endpoints.models.clone().unwrap_or_else(|| {
+                        protocol_openai_chat_completions::model_list_url(&provider.endpoints.http)
+                    }),
                     protocol_openai_chat_completions::parse_model_list,
+                )
+                .await
+            }
+            ProtocolId::AnthropicMessages => {
+                self.discover_protocol_models(
+                    provider,
+                    provider.endpoints.models.clone().unwrap_or_else(|| {
+                        protocol_anthropic_messages::model_list_url(&provider.endpoints.http)
+                    }),
+                    protocol_anthropic_messages::parse_model_list,
                 )
                 .await
             }
@@ -158,17 +172,29 @@ impl ManualDiscoveryClient {
     where
         E: Into<CatalogError>,
     {
-        let authorization = match &provider.auth {
-            AuthConfig::Bearer { api_key } => HeaderValue::from_str(&format!("Bearer {api_key}"))
-                .map_err(|_| CatalogError::DiscoveryRequest)?,
-        };
-        let request = Request::builder()
+        let mut request = Request::builder()
             .method(Method::GET)
             .uri(model_list_url)
-            .header(AUTHORIZATION, authorization)
             .header(ACCEPT, "application/json")
             .header(ACCEPT_ENCODING, "identity")
-            .header(USER_AGENT, "provider-x/0.1")
+            .header(USER_AGENT, "provider-x/0.1");
+        match &provider.auth {
+            AuthConfig::Bearer { api_key }
+                if provider.protocol == ProtocolId::AnthropicMessages =>
+            {
+                let api_key =
+                    HeaderValue::from_str(api_key).map_err(|_| CatalogError::DiscoveryRequest)?;
+                request = request
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", "2023-06-01");
+            }
+            AuthConfig::Bearer { api_key } => {
+                let authorization = HeaderValue::from_str(&format!("Bearer {api_key}"))
+                    .map_err(|_| CatalogError::DiscoveryRequest)?;
+                request = request.header(AUTHORIZATION, authorization);
+            }
+        }
+        let request = request
             .body(Empty::new())
             .map_err(|_| CatalogError::DiscoveryRequest)?;
         let response = tokio::time::timeout(self.response_timeout, self.client.request(request))
@@ -276,9 +302,11 @@ mod tests {
             description: None,
             enabled: false,
             protocol: ProtocolId::OpenaiResponses,
+            anthropic_thinking: None,
             endpoints: EndpointConfig {
                 http: endpoint,
                 websocket: None,
+                models: None,
             },
             auth: AuthConfig::Bearer {
                 api_key: "provider-secret".to_owned(),
@@ -360,6 +388,40 @@ mod tests {
             .discover(&provider(format!("http://{address}/v1")))
             .await
             .unwrap();
+        assert_eq!(models[0].id, "coder");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn anthropic_discovery_uses_typed_override_and_api_key_header() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            hyper::server::conn::http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(|request: Request<Incoming>| async move {
+                        assert_eq!(request.uri().path(), "/provider-models");
+                        assert!(!request.headers().contains_key(hyper::header::AUTHORIZATION));
+                        assert_eq!(request.headers()["x-api-key"], "provider-secret");
+                        assert_eq!(request.headers()["anthropic-version"], "2023-06-01");
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
+                            br#"{"data":[{"id":"coder"}]}"#,
+                        ))))
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let mut configured = provider("https://messages.invalid/anthropic".to_owned());
+        configured.protocol = ProtocolId::AnthropicMessages;
+        configured.endpoints.models = Some(format!("http://{address}/provider-models"));
+        let client =
+            ManualDiscoveryClient::new(Duration::from_secs(1), Duration::from_secs(1), 64 * 1024)
+                .unwrap();
+        let models = client.discover(&configured).await.unwrap();
         assert_eq!(models[0].id, "coder");
         server.await.unwrap();
     }

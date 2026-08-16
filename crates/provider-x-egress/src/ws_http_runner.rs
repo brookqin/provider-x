@@ -36,17 +36,29 @@ pub(crate) async fn run<A: WsHttpProtocolAdapter>(
     context: WsHttpSessionContext<'_>,
     shutdown: &mut watch::Receiver<WebSocketShutdown>,
 ) -> Result<(), WebSocketProxyError> {
+    let adapter = A::new_session(
+        context.upstream_model.clone(),
+        context.state.request_body_limit_bytes,
+    );
+    run_with_adapter(downstream, context, adapter, shutdown).await
+}
+
+pub(crate) async fn run_with_adapter<A: WsHttpProtocolAdapter>(
+    downstream: &mut DownstreamSocket,
+    context: WsHttpSessionContext<'_>,
+    mut adapter: A,
+    shutdown: &mut watch::Receiver<WebSocketShutdown>,
+) -> Result<(), WebSocketProxyError> {
     let WsHttpSessionContext {
         provider,
         runtime,
         request_headers,
         first_text,
-        upstream_model,
+        upstream_model: _,
         observed_route,
         codex_turn_metadata_header_present,
         state,
     } = context;
-    let mut adapter = A::new_session(upstream_model, state.request_body_limit_bytes);
     let mut next_text = Some(first_text.to_owned());
     let mut request_sequence = 1_u64;
 
@@ -197,8 +209,12 @@ async fn request_http<A: WsHttpProtocolAdapter>(
     let uri: hyper::Uri = A::upstream_url(&provider.config.endpoints.http)
         .parse()
         .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?;
-    let mut headers = third_party_request_headers(source_headers, &provider.config.auth)
-        .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?;
+    let mut headers = third_party_request_headers(
+        source_headers,
+        &provider.config.auth,
+        provider.config.protocol,
+    )
+    .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?;
     let websocket_headers: Vec<_> = headers
         .keys()
         .filter(|name| name.as_str().starts_with("sec-websocket-"))

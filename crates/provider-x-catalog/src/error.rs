@@ -12,6 +12,9 @@ pub enum CatalogError {
     ChatProtocol(#[from] protocol_openai_chat_completions::ChatProtocolError),
 
     #[error(transparent)]
+    AnthropicProtocol(#[from] protocol_anthropic_messages::AnthropicProtocolError),
+
+    #[error(transparent)]
     ProxyConfiguration(#[from] provider_x_network::ProxyConfigurationError),
 
     #[error("invalid Codex model catalog: {0}")]

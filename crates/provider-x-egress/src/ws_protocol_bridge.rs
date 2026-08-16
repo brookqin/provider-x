@@ -1,3 +1,4 @@
+use protocol_anthropic_messages::AnthropicMessagesWsHttpAdapter;
 use protocol_openai_chat_completions::ChatCompletionsWsHttpAdapter;
 use protocol_openai_responses::ResponsesWsHttpAdapter;
 use provider_x_core::ProtocolId;
@@ -54,6 +55,29 @@ pub(crate) async fn run(
                     codex_turn_metadata_header_present,
                     state,
                 },
+                shutdown,
+            )
+            .await
+        }
+        ProtocolId::AnthropicMessages => {
+            let adapter = AnthropicMessagesWsHttpAdapter::new_session_with_thinking_mode(
+                upstream_model.clone(),
+                state.request_body_limit_bytes,
+                provider.config.anthropic_thinking_mode(),
+            );
+            crate::ws_http_runner::run_with_adapter::<AnthropicMessagesWsHttpAdapter>(
+                downstream,
+                WsHttpSessionContext {
+                    provider,
+                    runtime,
+                    request_headers,
+                    first_text,
+                    upstream_model,
+                    observed_route,
+                    codex_turn_metadata_header_present,
+                    state,
+                },
+                adapter,
                 shutdown,
             )
             .await

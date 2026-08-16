@@ -222,14 +222,19 @@ pub fn build_refresh_preview(
         last_successful_refresh_at: refreshed_at.into(),
         source: ProviderModelSource {
             protocol: provider.protocol,
-            endpoint: match provider.protocol {
-                provider_x_core::ProtocolId::OpenaiResponses => {
-                    protocol_openai_responses::model_list_url(&provider.endpoints.http)
+            endpoint: provider.endpoints.models.clone().unwrap_or_else(|| {
+                match provider.protocol {
+                    provider_x_core::ProtocolId::OpenaiResponses => {
+                        protocol_openai_responses::model_list_url(&provider.endpoints.http)
+                    }
+                    provider_x_core::ProtocolId::OpenaiChatCompletions => {
+                        protocol_openai_chat_completions::model_list_url(&provider.endpoints.http)
+                    }
+                    provider_x_core::ProtocolId::AnthropicMessages => {
+                        protocol_anthropic_messages::model_list_url(&provider.endpoints.http)
+                    }
                 }
-                provider_x_core::ProtocolId::OpenaiChatCompletions => {
-                    protocol_openai_chat_completions::model_list_url(&provider.endpoints.http)
-                }
-            },
+            }),
         },
         models,
     };
@@ -371,9 +376,11 @@ mod tests {
             description: None,
             enabled: false,
             protocol: ProtocolId::OpenaiResponses,
+            anthropic_thinking: None,
             endpoints: EndpointConfig {
                 http: "https://gateway.example/v1".to_owned(),
                 websocket: None,
+                models: None,
             },
             auth: AuthConfig::Bearer {
                 api_key: "secret".to_owned(),

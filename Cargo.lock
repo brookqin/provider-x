@@ -4935,6 +4935,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "protocol-anthropic-messages"
+version = "0.6.0"
+dependencies = [
+ "bytes",
+ "protocol-openai-chat-completions",
+ "provider-x-core",
+ "provider-x-protocol",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "protocol-openai-chat-completions"
 version = "0.6.0"
 dependencies = [
@@ -4997,6 +5009,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "protocol-anthropic-messages",
  "protocol-openai-chat-completions",
  "protocol-openai-responses",
  "provider-x-core",
@@ -5050,6 +5063,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "pin-project-lite",
+ "protocol-anthropic-messages",
  "protocol-openai-chat-completions",
  "protocol-openai-responses",
  "provider-x-catalog",

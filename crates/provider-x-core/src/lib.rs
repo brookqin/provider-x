@@ -6,8 +6,8 @@ mod route;
 mod snapshot;
 
 pub use config::{
-    AuthConfig, CodexConfig, EndpointConfig, ListenerConfig, ProviderConfig, ProvidersDocument,
-    TimeoutConfig, TransportConfig,
+    AnthropicThinkingMode, AuthConfig, CodexConfig, EndpointConfig, ListenerConfig, ProviderConfig,
+    ProvidersDocument, TimeoutConfig, TransportConfig,
 };
 pub use error::CoreError;
 pub use model::{

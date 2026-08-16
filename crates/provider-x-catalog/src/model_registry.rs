@@ -189,9 +189,11 @@ mod tests {
             description: None,
             enabled: false,
             protocol: ProtocolId::OpenaiResponses,
+            anthropic_thinking: None,
             endpoints: EndpointConfig {
                 http: "https://gateway.example/v1".to_owned(),
                 websocket: None,
+                models: None,
             },
             auth: AuthConfig::Bearer {
                 api_key: "secret".to_owned(),

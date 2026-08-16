@@ -51,6 +51,8 @@ struct CapturedRequest {
     method: String,
     path_and_query: String,
     authorization: Option<String>,
+    x_api_key: Option<String>,
+    anthropic_version: Option<String>,
     chatgpt_account_id: Option<String>,
     content_encoding: Option<String>,
     body: Bytes,
@@ -102,9 +104,11 @@ fn provider(upstream: SocketAddr) -> ProviderConfig {
         description: None,
         enabled: true,
         protocol: ProtocolId::OpenaiResponses,
+        anthropic_thinking: None,
         endpoints: EndpointConfig {
             http: format!("http://{upstream}/v1"),
             websocket: None,
+            models: None,
         },
         auth: AuthConfig::Bearer {
             api_key: "third-party-secret".to_owned(),
@@ -119,6 +123,13 @@ fn provider(upstream: SocketAddr) -> ProviderConfig {
 fn chat_provider(upstream: SocketAddr) -> ProviderConfig {
     let mut provider = provider(upstream);
     provider.protocol = ProtocolId::OpenaiChatCompletions;
+    provider
+}
+
+fn anthropic_provider(upstream: SocketAddr) -> ProviderConfig {
+    let mut provider = provider(upstream);
+    provider.protocol = ProtocolId::AnthropicMessages;
+    provider.endpoints.http = format!("http://{upstream}");
     provider
 }
 
@@ -320,6 +331,16 @@ async fn spawn_upstream(
                     .get("chatgpt-account-id")
                     .and_then(|value| value.to_str().ok())
                     .map(ToOwned::to_owned);
+                let x_api_key = request
+                    .headers()
+                    .get("x-api-key")
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned);
+                let anthropic_version = request
+                    .headers()
+                    .get("anthropic-version")
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned);
                 let content_encoding = request
                     .headers()
                     .get("content-encoding")
@@ -331,6 +352,8 @@ async fn spawn_upstream(
                         method,
                         path_and_query,
                         authorization,
+                        x_api_key,
+                        anthropic_version,
                         chatgpt_account_id,
                         content_encoding,
                         body,
@@ -364,6 +387,38 @@ async fn spawn_upstream(
             .unwrap();
     });
     (address, captured_rx)
+}
+
+async fn spawn_anthropic_upstream_with_entity_headers() -> SocketAddr {
+    const BODY: &str = "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_headers\",\"usage\":{\"input_tokens\":1}}}\n\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"ok\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(|request: Request<Incoming>| async move {
+                    let _ = request.into_body().collect().await.unwrap();
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "text/event-stream")
+                            .header("content-length", BODY.len())
+                            .header("content-encoding", "identity")
+                            .header("etag", "upstream-anthropic-entity")
+                            .header("last-modified", "Sun, 16 Aug 2026 00:00:00 GMT")
+                            .header("content-md5", "upstream-md5")
+                            .header("digest", "sha-256=upstream")
+                            .body(Full::new(Bytes::from_static(BODY.as_bytes())))
+                            .unwrap(),
+                    )
+                }),
+            )
+            .await
+            .unwrap();
+    });
+    address
 }
 
 async fn spawn_ws_http_bridge_upstream() -> (
@@ -410,6 +465,8 @@ async fn spawn_ws_http_bridge_upstream() -> (
                         method,
                         path_and_query,
                         authorization,
+                        x_api_key: None,
+                        anthropic_version: None,
                         chatgpt_account_id,
                         content_encoding,
                         body,
@@ -492,6 +549,8 @@ async fn spawn_chat_bridge_upstream() -> (SocketAddr, mpsc::Receiver<CapturedReq
                                 method,
                                 path_and_query,
                                 authorization,
+                                x_api_key: None,
+                                anthropic_version: None,
                                 chatgpt_account_id: None,
                                 content_encoding: None,
                                 body,
@@ -1167,6 +1226,96 @@ async fn chat_completions_provider_converts_http_request_and_sse_response() {
     assert_eq!(converted["messages"][1]["content"], "pwd");
     assert_eq!(converted["tools"][0]["function"]["name"], "exec_command");
     assert_eq!(converted["stream"], true);
+    shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
+async fn anthropic_provider_converts_http_request_headers_and_sse_response() {
+    let (upstream, mut captured) = spawn_upstream(vec![
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"content\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":1}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    ])
+    .await;
+    let configured = anthropic_provider(upstream);
+    let (proxy, shutdown) = spawn_proxy(
+        providers(Some(configured), 1_048_576),
+        "http://127.0.0.1:9/backend-api/codex".to_owned(),
+    )
+    .await;
+    let request = Request::builder()
+        .method("POST")
+        .uri(ingress_http_url(proxy, "/v1/responses"))
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer official-secret")
+        .body(Full::new(Bytes::from_static(
+            br#"{"model":"provider-a/coder","instructions":"Be exact","input":"ping","max_output_tokens":2048,"tools":[{"type":"function","name":"marker","parameters":{"type":"object"}}]}"#,
+        )))
+        .unwrap();
+
+    let response = client().request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let downstream = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(downstream.contains("response.output_text.delta"));
+    assert!(downstream.contains("response.completed"));
+
+    let captured = captured.recv().await.unwrap();
+    assert_eq!(captured.path_and_query, "/v1/messages");
+    assert!(captured.authorization.is_none());
+    assert_eq!(captured.x_api_key.as_deref(), Some("third-party-secret"));
+    assert_eq!(captured.anthropic_version.as_deref(), Some("2023-06-01"));
+    let converted: Value = serde_json::from_slice(&captured.body).unwrap();
+    assert_eq!(converted["model"], "coder");
+    assert_eq!(converted["system"], "Be exact");
+    assert_eq!(converted["messages"][0]["content"], "ping");
+    assert_eq!(converted["tools"][0]["name"], "marker");
+    assert_eq!(converted["stream"], true);
+    shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
+async fn anthropic_success_rewrite_removes_upstream_entity_headers() {
+    let upstream = spawn_anthropic_upstream_with_entity_headers().await;
+    let configured = anthropic_provider(upstream);
+    let (proxy, shutdown) = spawn_proxy(
+        providers(Some(configured), 1_048_576),
+        "http://127.0.0.1:9/backend-api/codex".to_owned(),
+    )
+    .await;
+    let request = Request::builder()
+        .method("POST")
+        .uri(ingress_http_url(proxy, "/v1/responses"))
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from_static(
+            br#"{"model":"provider-a/coder","input":"ping"}"#,
+        )))
+        .unwrap();
+
+    let response = client().request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    for name in [
+        "content-length",
+        "content-encoding",
+        "etag",
+        "last-modified",
+        "content-md5",
+        "digest",
+    ] {
+        assert!(
+            !response.headers().contains_key(name),
+            "{name} was retained"
+        );
+    }
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("response.completed"));
     shutdown.send(true).unwrap();
 }
 
@@ -2041,9 +2190,11 @@ async fn live_deepseek_v4_pro_chat_completions_tool_contract() {
         description: None,
         enabled: true,
         protocol: ProtocolId::OpenaiChatCompletions,
+        anthropic_thinking: None,
         endpoints: EndpointConfig {
             http: "https://api.deepseek.com".to_owned(),
             websocket: None,
+            models: Some("https://api.deepseek.com/models".to_owned()),
         },
         auth: AuthConfig::Bearer { api_key },
         transports: TransportConfig {
@@ -2161,6 +2312,172 @@ async fn live_deepseek_v4_pro_chat_completions_tool_contract() {
         }
     }
     assert_eq!(output.trim(), "DEEPSEEK_CHAT_TOOL_OK");
+    websocket.close(None).await.unwrap();
+    shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires PROVIDER_X_DEEPSEEK_API_KEY and live DeepSeek Anthropic access"]
+#[allow(clippy::too_many_lines)] // Keep the full two-turn live contract visible in one test.
+async fn live_deepseek_v4_pro_anthropic_messages_tool_contract() {
+    let api_key = std::env::var("PROVIDER_X_DEEPSEEK_API_KEY")
+        .expect("PROVIDER_X_DEEPSEEK_API_KEY is required");
+    let provider_id = ProviderId::new("deepseek").unwrap();
+    let model_id = ModelId::new("deepseek-v4-pro").unwrap();
+    let configured = ProviderConfig {
+        id: provider_id.clone(),
+        name: "DeepSeek Anthropic live contract".to_owned(),
+        description: None,
+        enabled: true,
+        protocol: ProtocolId::AnthropicMessages,
+        anthropic_thinking: Some(provider_x_core::AnthropicThinkingMode::Enabled),
+        endpoints: EndpointConfig {
+            http: "https://api.deepseek.com/anthropic".to_owned(),
+            websocket: None,
+            models: Some("https://api.deepseek.com/models".to_owned()),
+        },
+        auth: AuthConfig::Bearer { api_key },
+        transports: TransportConfig {
+            http_sse: true,
+            websocket: false,
+        },
+    };
+    let cache = ModelCacheDocument {
+        schema_version: 1,
+        providers: BTreeMap::from([(
+            provider_id.clone(),
+            ProviderModelCache {
+                config_fingerprint: configured.routing_fingerprint().unwrap(),
+                last_successful_refresh_at: "live".to_owned(),
+                source: ProviderModelSource {
+                    protocol: ProtocolId::AnthropicMessages,
+                    endpoint: "https://api.deepseek.com/models".to_owned(),
+                },
+                models: vec![ProviderModelSpec {
+                    upstream_model_id: model_id.clone(),
+                    catalog_model_id: CatalogModelId::for_provider(&provider_id, &model_id),
+                    display_name: "DeepSeek V4 Pro".to_owned(),
+                    publication_status: ModelPublicationStatus::Ready,
+                    context_window: Some(1_000_000),
+                    supported_reasoning_levels: vec!["high".to_owned(), "max".to_owned()],
+                    supports_parallel_tool_calls: Some(false),
+                    supports_search_tool: Some(false),
+                    metadata_sources: BTreeMap::new(),
+                }],
+            },
+        )]),
+    };
+    let observer = Arc::new(CollectingObserver::default());
+    let contract_observer: Arc<dyn EgressObserver> = observer.clone();
+    let (proxy, shutdown) = spawn_proxy_with_cache_and_observer(
+        providers(Some(configured), 1_048_576),
+        cache,
+        "http://127.0.0.1:9/backend-api/codex".to_owned(),
+        Some(contract_observer),
+    )
+    .await;
+    let (mut websocket, _) = connect_async(ingress_websocket_url(proxy)).await.unwrap();
+    websocket
+        .send(Message::text(
+            serde_json::json!({
+                "type":"response.create",
+                "model":"deepseek/deepseek-v4-pro",
+                "generate":false,
+                "instructions":"Call the marker tool. After receiving its output, reply with exactly that output.",
+                "tools":[{"type":"namespace","name":"contract","tools":[{"type":"function","name":"get_marker","description":"Returns the marker","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}}]}]
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let created: Value =
+        serde_json::from_str(websocket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    let warmup_id = created["response"]["id"].as_str().unwrap().to_owned();
+    let _ = websocket.next().await.unwrap().unwrap();
+    websocket
+        .send(Message::text(
+            serde_json::json!({
+                "type":"response.create",
+                "model":"deepseek/deepseek-v4-pro",
+                "previous_response_id":warmup_id,
+                "reasoning":{"effort":"high"},
+                "tool_choice":{"type":"function","name":"get_marker","namespace":"contract"},
+                "input":"Use the marker tool now."
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut first_turn_reasoning = false;
+    let call_id = loop {
+        let message = websocket.next().await.unwrap().unwrap();
+        let Message::Text(text) = message else {
+            panic!(
+                "expected text event, got {message:?}; records={:?}",
+                observer.records()
+            );
+        };
+        let event: Value = serde_json::from_str(text.as_ref())
+            .unwrap_or_else(|_| panic!("non-JSON text event; records={:?}", observer.records()));
+        if event["type"] == "response.reasoning_summary_text.delta" {
+            first_turn_reasoning = true;
+        }
+        if event["type"] == "response.completed" {
+            let call = event["response"]["output"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["type"] == "function_call")
+                .expect("DeepSeek Anthropic must return the forced function call");
+            assert_eq!(call["name"], "get_marker");
+            assert_eq!(call["namespace"], "contract");
+            break call["call_id"].as_str().unwrap().to_owned();
+        }
+    };
+    assert!(
+        first_turn_reasoning,
+        "DeepSeek thinking output was not observed"
+    );
+    websocket
+        .send(Message::text(
+            serde_json::json!({
+                "type":"response.create",
+                "model":"deepseek/deepseek-v4-pro",
+                "previous_response_id":"anthropic-tool",
+                "tool_choice":"auto",
+                "input":[{"type":"function_call_output","call_id":call_id,"output":"DEEPSEEK_ANTHROPIC_TOOL_OK"}]
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut output = String::new();
+    let mut continuation_reasoning = false;
+    loop {
+        let message = websocket.next().await.unwrap().unwrap();
+        let Message::Text(text) = message else {
+            panic!(
+                "expected text event, got {message:?}; records={:?}",
+                observer.records()
+            );
+        };
+        let event: Value = serde_json::from_str(text.as_ref())
+            .unwrap_or_else(|_| panic!("non-JSON text event; records={:?}", observer.records()));
+        if event["type"] == "response.reasoning_summary_text.delta" {
+            continuation_reasoning = true;
+        }
+        if event["type"] == "response.output_text.delta" {
+            output.push_str(event["delta"].as_str().unwrap_or_default());
+        }
+        if event["type"] == "response.completed" {
+            break;
+        }
+    }
+    assert!(
+        continuation_reasoning,
+        "DeepSeek continuation did not remain in thinking mode"
+    );
+    assert_eq!(output.trim(), "DEEPSEEK_ANTHROPIC_TOOL_OK");
     websocket.close(None).await.unwrap();
     shutdown.send(true).unwrap();
 }

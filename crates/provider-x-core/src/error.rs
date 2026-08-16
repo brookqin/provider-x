@@ -52,16 +52,20 @@ pub enum CoreError {
     #[error("provider {provider_id} HTTP endpoint must be absolute")]
     InvalidHttpEndpoint { provider_id: String },
 
+    #[error("provider {provider_id} model-list endpoint must be an absolute HTTP URL")]
+    InvalidModelListEndpoint { provider_id: String },
+
     #[error("provider {provider_id} declares WebSocket support without a WebSocket endpoint")]
     MissingWebSocketEndpoint { provider_id: String },
 
     #[error("provider {provider_id} WebSocket endpoint must be absolute ws:// or wss://")]
     InvalidWebSocketEndpoint { provider_id: String },
 
-    #[error(
-        "provider {provider_id} uses Chat Completions, which has no native WebSocket transport"
-    )]
-    ChatCompletionsWebSocketUnsupported { provider_id: String },
+    #[error("provider {provider_id} uses {protocol}, which has no native WebSocket transport")]
+    ProtocolWebSocketUnsupported {
+        provider_id: String,
+        protocol: &'static str,
+    },
 
     #[error("ready model {model_id} for provider {provider_id} has incomplete capabilities")]
     IncompleteReadyModel {

@@ -24,6 +24,7 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 - 支持基于 HTTP/SSE 和原生 WebSocket 的 OpenAI Responses 协议。
 - 对不支持原生 WebSocket 的供应商，将 Codex WebSocket 会话桥接至 HTTP/SSE。
 - 将 Responses 请求、流式事件、工具调用和有界会话历史适配至 OpenAI Chat Completions 供应商。
+- 将 Responses 请求与流式事件适配至 Anthropic Messages，包括带签名的思考块和有状态工具续接。
 - 由用户主动刷新供应商模型，并使用 [models.dev](https://models.dev/) 的精确匹配结果补充缺失元数据。
 - 通过原生 GPUI 设置窗口管理供应商、模型可见性与能力、Codex 集成、开机运行以及英文或简体中文界面。
 - 上游连接支持 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
@@ -31,7 +32,6 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 
 ### 计划中
 
-- 支持 Anthropic 协议。
 - 增加 GLM、KIMI、MiniMax 等供应商模板。
 - 完整支持第三方模型的 subagent 调度，包括可读的任务详情传递和后续消息通信。
 
@@ -44,6 +44,8 @@ flowchart LR
     B -->|"provider/model + Responses"| D["Responses 供应商"]
     B -->|"provider/model + Chat Completions"| E["协议适配器"]
     E --> F["Chat Completions 供应商"]
+    B -->|"provider/model + Anthropic Messages"| E
+    E --> G["Anthropic 供应商"]
 ```
 
 ProviderX 将 Codex 配置为使用形如 `http://127.0.0.1:<port>/<random-capability>/v1` 的本地地址。Router 检查顶层模型 ID 并选择路由：
@@ -60,8 +62,9 @@ ProviderX 会将已启用的第三方模型合并到 Codex 看到的模型列表
 | --- | --- | --- | --- |
 | OpenAI Responses | 支持 | 可选 | HTTP-only 供应商支持 |
 | OpenAI Chat Completions | 支持 | 不支持 | 通过协议适配器支持 |
+| Anthropic Messages | 支持 | 不支持 | 通过协议适配器支持 |
 
-协议能力仍取决于具体上游供应商。Chat Completions 不支持的输入项或工具会按照适配器契约被拒绝或明确省略，不会被静默转换成错误语义。
+协议能力仍取决于具体上游供应商。不受支持的适配器输入项或工具会按照协议契约被拒绝或明确省略，不会被静默转换成错误语义。
 
 ## 已知限制
 
@@ -105,6 +108,17 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 5. 保存并启用供应商。
 6. 打开 **全局设置**，启用 **Codex / ChatGPT Desktop 集成**。
 7. 完整退出并重新启动 ChatGPT Desktop，然后选择类似 `provider-id/model-id` 的命名空间模型。
+
+DeepSeek 使用 Anthropic Messages 时请选择 **Anthropic Messages**。DeepSeek 模板会将 HTTP
+基址设置为 `https://api.deepseek.com/anthropic`；ProviderX 自动追加 `/v1/messages`，以
+`x-api-key` 发送当前配置的密钥，并始终保持密钥私有。模型刷新则通过模板内的类型化模型
+列表地址继续使用 DeepSeek 兼容的 `/models` 接口。模板同时设置
+`anthropic_thinking: enabled`：普通请求与工具续接都会保持思考模式，并原样回传带签名的
+思考块。强制工具选择与思考模式冲突时，ProviderX 会保持思考开启，将工具要求转换为明确
+指令并使用自动工具选择，不会为了强制调用而关闭思考。
+
+自定义 Anthropic 供应商默认使用 `anthropic_thinking: adaptive`，以兼容当前 Claude 模型；
+实现旧式手动扩展思考的兼容接口可以在供应商文档中明确设置为 `enabled`。
 
 停用集成时，只要 ProviderX 管理的配置值没有被外部修改，它就会恢复启用集成前的 Codex 设置。请保持 ProviderX 运行至现有任务结束，然后再重启 ChatGPT Desktop。
 

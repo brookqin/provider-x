@@ -337,9 +337,11 @@ fn probe_config(args: &ProbeArgs, mock_provider: Option<SocketAddr>) -> Provider
                 description: Some("strict local contract fixture".to_owned()),
                 enabled: true,
                 protocol: ProtocolId::OpenaiResponses,
+                anthropic_thinking: None,
                 endpoints: EndpointConfig {
                     http: format!("http://{address}/v1"),
                     websocket: websocket.clone(),
+                    models: None,
                 },
                 auth: AuthConfig::Bearer {
                     api_key: "m0-contract-key".to_owned(),

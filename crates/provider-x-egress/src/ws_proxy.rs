@@ -463,7 +463,10 @@ fn prepare_first_message(
             let provider = runtime
                 .provider(&provider_id)
                 .ok_or(WebSocketProxyError::ProviderNotAvailable)?;
-            if provider.config.protocol == ProtocolId::OpenaiChatCompletions {
+            if matches!(
+                provider.config.protocol,
+                ProtocolId::OpenaiChatCompletions | ProtocolId::AnthropicMessages
+            ) {
                 if !provider.config.transports.http_sse {
                     return Err(WebSocketProxyError::TransportNotSupported);
                 }
@@ -512,6 +515,7 @@ fn prepare_first_message(
                             headers: third_party_websocket_headers(
                                 request_headers,
                                 &provider.config.auth,
+                                provider.config.protocol,
                             )
                             .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?,
                             message: Message::text(rewritten),
