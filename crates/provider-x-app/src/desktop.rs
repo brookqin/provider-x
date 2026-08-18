@@ -2,9 +2,9 @@ use std::{borrow::Cow, cell::Cell, rc::Rc, time::Duration};
 
 use chrono::{SecondsFormat, Utc};
 use gpui::{
-    App, AssetSource, Bounds, Context, Entity, Global, PromptButton, PromptLevel, Render,
-    SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, img,
-    prelude::*, px, size,
+    AnyWindowHandle, App, AssetSource, Bounds, Context, Entity, Global, ImageSource, PromptButton,
+    PromptLevel, Render, SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowOptions, div, img, prelude::*, px, size,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IconNamed, IndexPath, Root, Selectable, Sizable,
@@ -41,6 +41,9 @@ use crate::runtime::AppServices;
 use crate::{control_plane::AppPaths, storage::SingleInstanceGuard};
 
 const TRAY_POLL_INTERVAL: Duration = Duration::from_millis(40);
+const SETTINGS_RELEASE_GRACE: Duration = Duration::from_secs(5);
+const SMOKE_SETTINGS_RELEASE_GRACE: Duration = Duration::from_millis(250);
+const SMOKE_RELEASE_OBSERVATION_DELAY: Duration = Duration::from_secs(5);
 const DISCOVERY_BODY_LIMIT: usize = 8 * 1024 * 1024;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RESPONSES_PROTOCOL: &str = "Responses";
@@ -172,9 +175,46 @@ struct UiLocaleState {
 
 impl Global for UiLocaleState {}
 
-#[derive(Default)]
 struct SettingsRegistry {
     view: Option<WeakEntity<SettingsView>>,
+    components_initialized: bool,
+    release_generation: u64,
+    release_pending: bool,
+    release_delay: Duration,
+    quitting: bool,
+}
+
+impl SettingsRegistry {
+    fn new(release_delay: Duration) -> Self {
+        Self {
+            view: None,
+            components_initialized: false,
+            release_generation: 0,
+            release_pending: false,
+            release_delay,
+            quitting: false,
+        }
+    }
+
+    fn cancel_release(&mut self) {
+        self.release_generation = self.release_generation.wrapping_add(1);
+        self.release_pending = false;
+    }
+
+    fn begin_release(&mut self) -> (u64, Duration) {
+        self.release_generation = self.release_generation.wrapping_add(1);
+        self.release_pending = true;
+        (self.release_generation, self.release_delay)
+    }
+
+    fn finish_release(&mut self, generation: u64) -> bool {
+        if !self.release_pending || self.release_generation != generation {
+            return false;
+        }
+        self.release_pending = false;
+        self.view = None;
+        true
+    }
 }
 
 impl Global for SettingsRegistry {}
@@ -256,8 +296,6 @@ fn launch(
     locale: UiLocale,
     locale_store: UiLocaleStore,
 ) -> anyhow::Result<()> {
-    rust_i18n::extend!(gpui_component);
-    gpui_component::init(cx);
     cx.set_global(UiLocaleState {
         current: locale,
         store: locale_store,
@@ -286,8 +324,20 @@ fn launch(
 
     let tray = Rc::new(MacTrayController::new(listener_address, codex_enabled)?);
     cx.set_global(TrayControllerGlobal(Rc::clone(&tray)));
-    cx.set_global(SettingsRegistry::default());
+    let settings_release_delay = if options.smoke_lifecycle {
+        SMOKE_SETTINGS_RELEASE_GRACE
+    } else {
+        SETTINGS_RELEASE_GRACE
+    };
+    cx.set_global(SettingsRegistry::new(settings_release_delay));
+    cx.on_window_closed(|cx, _| {
+        let registry = cx.global_mut::<SettingsRegistry>();
+        registry.view = None;
+        registry.cancel_release();
+    })
+    .detach();
     println!("PROVIDER_X_SMOKE tray=ready activation_policy=accessory");
+    println!("PROVIDER_X_SMOKE settings_ui=deferred");
 
     if options.show_settings {
         open_or_focus_settings(cx)?;
@@ -349,25 +399,67 @@ fn spawn_smoke_lifecycle(cx: &mut App) {
             .timer(Duration::from_millis(600))
             .await;
         cx.update(|cx| {
-            for handle in cx.windows() {
-                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            if cx.windows().is_empty() {
+                if let Err(error) = open_or_focus_settings(cx) {
+                    eprintln!("failed to open settings during lifecycle smoke: {error:#}");
+                    cx.quit();
+                }
             }
         });
         cx.background_executor()
             .timer(Duration::from_millis(250))
             .await;
         cx.update(|cx| {
-            if cx.windows().is_empty() {
-                println!("PROVIDER_X_SMOKE lifecycle=window_closed_process_alive");
-                if let Err(error) = open_or_focus_settings(cx) {
-                    eprintln!("failed to reopen settings: {error:#}");
-                    cx.quit();
-                } else {
-                    println!("PROVIDER_X_SMOKE lifecycle=window_reopened");
-                }
+            if let Some(handle) = cx.windows().first().copied() {
+                schedule_settings_window_release(handle, cx);
+                println!("PROVIDER_X_SMOKE lifecycle=window_hidden_pending_release");
             } else {
-                eprintln!("settings window did not close during lifecycle smoke");
+                eprintln!("settings window was not open during lifecycle smoke");
                 cx.quit();
+            }
+        });
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+        cx.update(|cx| {
+            if let Err(error) = open_or_focus_settings(cx) {
+                eprintln!("failed to reopen retained settings: {error:#}");
+                cx.quit();
+            } else {
+                println!("PROVIDER_X_SMOKE lifecycle=window_reopened_before_release");
+            }
+        });
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+        cx.update(|cx| {
+            if let Some(handle) = cx.windows().first().copied() {
+                schedule_settings_window_release(handle, cx);
+            } else {
+                eprintln!("retained settings window disappeared before release smoke");
+                cx.quit();
+            }
+        });
+        cx.background_executor()
+            .timer(SMOKE_SETTINGS_RELEASE_GRACE + Duration::from_millis(100))
+            .await;
+        cx.update(|cx| {
+            if !cx.windows().is_empty() {
+                eprintln!("settings window was not released after the grace period");
+                cx.quit();
+                return;
+            }
+            println!("PROVIDER_X_SMOKE lifecycle=window_closed_process_alive");
+        });
+        cx.background_executor()
+            .timer(SMOKE_RELEASE_OBSERVATION_DELAY)
+            .await;
+        cx.update(|cx| {
+            if let Err(error) = open_or_focus_settings(cx) {
+                eprintln!("failed to reopen settings after release: {error:#}");
+                cx.quit();
+            } else {
+                println!("PROVIDER_X_SMOKE lifecycle=window_reopened");
             }
         });
     })
@@ -465,6 +557,7 @@ fn sync_settings_codex_error(cx: &mut App, error: String) {
 }
 
 fn graceful_quit(cx: &mut App) {
+    cx.global_mut::<SettingsRegistry>().quitting = true;
     let services = cx.global::<AppServices>().clone();
     let shutdown_services = services.clone();
     let log_services = services.clone();
@@ -485,12 +578,14 @@ fn graceful_quit(cx: &mut App) {
 }
 
 fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
+    cx.global_mut::<SettingsRegistry>().cancel_release();
     if let Some(handle) = cx.windows().first().copied() {
         cx.activate(true);
         handle.update(cx, |_, window, _| window.activate_window())?;
         return Ok(());
     }
 
+    ensure_settings_ui_initialized(cx);
     let bounds = Bounds::centered(None, size(px(980.0), px(720.0)), cx);
     cx.open_window(
         WindowOptions {
@@ -503,6 +598,14 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
             ..WindowOptions::default()
         },
         |window, cx| {
+            let window_handle = window.window_handle();
+            window.on_window_should_close(cx, move |_, cx| {
+                if cx.global::<SettingsRegistry>().quitting {
+                    return true;
+                }
+                schedule_settings_window_release(window_handle, cx);
+                false
+            });
             Theme::sync_system_appearance(Some(window), cx);
             window
                 .observe_window_appearance(|window, cx| {
@@ -512,15 +615,47 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
             let services = cx.global::<AppServices>().clone();
             let tray = Rc::clone(&cx.global::<TrayControllerGlobal>().0);
             let settings = cx.new(|cx| SettingsView::new(services, tray, window, cx));
-            cx.set_global(SettingsRegistry {
-                view: Some(settings.downgrade()),
-            });
+            cx.global_mut::<SettingsRegistry>().view = Some(settings.downgrade());
             cx.new(|cx| Root::new(settings, window, cx))
         },
     )?;
     cx.activate(true);
     println!("PROVIDER_X_SMOKE settings_window=open");
     Ok(())
+}
+
+fn ensure_settings_ui_initialized(cx: &mut App) {
+    if cx.global::<SettingsRegistry>().components_initialized {
+        return;
+    }
+    rust_i18n::extend!(gpui_component);
+    gpui_component::init(cx);
+    cx.global_mut::<SettingsRegistry>().components_initialized = true;
+    println!("PROVIDER_X_SMOKE settings_ui=initialized");
+}
+
+fn schedule_settings_window_release(handle: AnyWindowHandle, cx: &mut App) {
+    let (generation, delay) = cx.global_mut::<SettingsRegistry>().begin_release();
+    cx.hide();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(delay).await;
+        cx.update(|cx| finish_settings_window_release(handle, generation, cx));
+    })
+    .detach();
+}
+
+fn finish_settings_window_release(handle: AnyWindowHandle, generation: u64, cx: &mut App) {
+    if !cx
+        .global_mut::<SettingsRegistry>()
+        .finish_release(generation)
+    {
+        return;
+    }
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    for (path, _) in EMBEDDED_ASSETS {
+        ImageSource::from(*path).remove_asset(cx);
+    }
+    println!("PROVIDER_X_SMOKE settings_window=released");
 }
 
 fn codex_integration_is_active(status: &CodexConfigStatus) -> bool {
@@ -3004,11 +3139,12 @@ fn summaries_from_control(control: &ControlPlane) -> Vec<ProviderSummary> {
 mod tests {
     use gpui::AssetSource;
     use gpui_component::{IconName, IconNamed};
+    use std::time::Duration;
 
     use super::{
         AppAssets, EMBEDDED_ASSETS, REFRESH_MODELS_ICON_PATH, SETTINGS_APP_ICON_DARK_PATH,
-        SETTINGS_APP_ICON_LIGHT_PATH, next_available_provider_id, provider_namespace_from_name,
-        redacted_codex_disable_diagnostic,
+        SETTINGS_APP_ICON_LIGHT_PATH, SettingsRegistry, next_available_provider_id,
+        provider_namespace_from_name, redacted_codex_disable_diagnostic,
     };
 
     #[test]
@@ -3052,6 +3188,21 @@ mod tests {
         assert!(assets.load(SETTINGS_APP_ICON_DARK_PATH).unwrap().is_some());
         assert_eq!(assets.list("").unwrap().len(), EMBEDDED_ASSETS.len());
         assert!(assets.load("icons/not-bundled.svg").is_err());
+    }
+
+    #[test]
+    fn settings_release_generation_cancels_stale_cleanup() {
+        let delay = Duration::from_secs(5);
+        let mut registry = SettingsRegistry::new(delay);
+
+        let (stale_generation, configured_delay) = registry.begin_release();
+        assert_eq!(configured_delay, delay);
+        registry.cancel_release();
+        assert!(!registry.finish_release(stale_generation));
+
+        let (current_generation, _) = registry.begin_release();
+        assert!(registry.finish_release(current_generation));
+        assert!(!registry.release_pending);
     }
 
     #[test]
