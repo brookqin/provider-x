@@ -1,5 +1,7 @@
 mod custom;
 mod deepseek;
+mod openai;
+mod openai_oauth;
 
 use std::collections::BTreeMap;
 
@@ -16,6 +18,15 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub use deepseek::{DEEPSEEK_HTTP_ENDPOINT, DEEPSEEK_MODELS_DEV_ID, DEEPSEEK_MODELS_ENDPOINT};
+pub use openai::{
+    HTTP_ENDPOINT as OPENAI_HTTP_ENDPOINT, MODELS_DEV_ID as OPENAI_MODELS_DEV_ID,
+    MODELS_ENDPOINT as OPENAI_MODELS_ENDPOINT, WEBSOCKET_ENDPOINT as OPENAI_WEBSOCKET_ENDPOINT,
+};
+pub use openai_oauth::{
+    HTTP_ENDPOINT as OPENAI_OAUTH_HTTP_ENDPOINT, MODELS_ENDPOINT as OPENAI_OAUTH_MODELS_ENDPOINT,
+    OpenAiOAuthClient, OpenAiOAuthError, WEBSOCKET_ENDPOINT as OPENAI_OAUTH_WEBSOCKET_ENDPOINT,
+    needs_refresh as openai_oauth_needs_refresh,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProviderDefinition {
@@ -26,17 +37,25 @@ pub struct ProviderDefinition {
     pub configurable: bool,
     pub protocol: ProtocolId,
     pub http_endpoint: &'static str,
+    pub websocket_endpoint: Option<&'static str>,
     pub models_endpoint: Option<&'static str>,
     pub http_sse: bool,
     pub websocket: bool,
 }
 
-pub const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[deepseek::DEFINITION, custom::DEFINITION];
+pub const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
+    openai::DEFINITION,
+    openai_oauth::DEFINITION,
+    deepseek::DEFINITION,
+    custom::DEFINITION,
+];
 
 #[must_use]
 pub fn provider_definition(kind: ProviderKind) -> &'static ProviderDefinition {
     match kind {
         ProviderKind::DeepSeek => &deepseek::DEFINITION,
+        ProviderKind::OpenAi => &openai::DEFINITION,
+        ProviderKind::OpenAiOAuth => &openai_oauth::DEFINITION,
         ProviderKind::Custom => &custom::DEFINITION,
     }
 }
@@ -45,6 +64,7 @@ pub fn provider_definition(kind: ProviderKind) -> &'static ProviderDefinition {
 #[serde(rename_all = "snake_case")]
 enum AuthStyle {
     Bearer,
+    OpenAiOAuth,
     Anthropic,
 }
 
@@ -123,6 +143,7 @@ pub struct ProviderProfile {
     transports: TransportConfig,
     models_dev_id: Option<&'static str>,
     anthropic_thinking: AnthropicThinkingMode,
+    credential_scope: Option<String>,
     accepts_legacy_fingerprint: bool,
 }
 
@@ -151,12 +172,20 @@ pub enum ProviderError {
         provider_id: String,
         implementation: &'static str,
     },
+
+    #[error("provider {provider_id} uses credentials that do not match {implementation}")]
+    AuthenticationMismatch {
+        provider_id: String,
+        implementation: &'static str,
+    },
 }
 
 #[must_use]
 pub fn resolve_provider(provider: &ProviderConfig) -> ProviderProfile {
     match provider.kind {
         ProviderKind::DeepSeek => deepseek::profile(),
+        ProviderKind::OpenAi => openai::profile(),
+        ProviderKind::OpenAiOAuth => openai_oauth::profile(&provider.auth),
         ProviderKind::Custom => custom::profile(provider),
     }
 }
@@ -174,12 +203,26 @@ pub fn validate_provider(provider: &ProviderConfig) -> Result<(), ProviderError>
         && (provider.protocol != definition.protocol
             || provider.anthropic_thinking.is_some()
             || provider.endpoints.http != definition.http_endpoint
-            || provider.endpoints.websocket.is_some()
+            || provider.endpoints.websocket.as_deref() != definition.websocket_endpoint
             || provider.endpoints.models.as_deref() != definition.models_endpoint
             || provider.transports.http_sse != definition.http_sse
             || provider.transports.websocket != definition.websocket)
     {
         return Err(ProviderError::DedicatedConfigurationMismatch {
+            provider_id: provider.id.to_string(),
+            implementation: definition.display_name,
+        });
+    }
+    let authentication_matches = matches!(
+        (provider.kind, &provider.auth),
+        (ProviderKind::OpenAiOAuth, AuthConfig::OpenAiOAuth { .. })
+            | (
+                ProviderKind::DeepSeek | ProviderKind::OpenAi | ProviderKind::Custom,
+                AuthConfig::Bearer { .. }
+            )
+    );
+    if !authentication_matches {
+        return Err(ProviderError::AuthenticationMismatch {
             provider_id: provider.id.to_string(),
             implementation: definition.display_name,
         });
@@ -297,6 +340,8 @@ impl ProviderProfile {
     pub fn parse_model_list(&self, bytes: &[u8]) -> Result<Vec<DiscoveredModel>, ProviderError> {
         match self.kind {
             ProviderKind::DeepSeek => deepseek::parse_model_list(bytes),
+            ProviderKind::OpenAi => openai::parse_model_list(bytes),
+            ProviderKind::OpenAiOAuth => openai_oauth::parse_model_list(bytes),
             ProviderKind::Custom => custom::parse_model_list(self, bytes),
         }
     }
@@ -331,6 +376,8 @@ impl ProviderProfile {
     ) -> Result<(), ProviderError> {
         match self.kind {
             ProviderKind::DeepSeek => deepseek::apply_authentication(auth, headers),
+            ProviderKind::OpenAi => openai::apply_authentication(auth, headers),
+            ProviderKind::OpenAiOAuth => openai_oauth::apply_authentication(auth, headers),
             ProviderKind::Custom => custom::apply_authentication(self, auth, headers),
         }
     }
@@ -352,6 +399,29 @@ impl ProviderProfile {
                 headers.insert("x-api-key", value);
                 headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             }
+            (
+                AuthStyle::OpenAiOAuth,
+                AuthConfig::OpenAiOAuth {
+                    access_token,
+                    account_id,
+                    is_fedramp,
+                    ..
+                },
+            ) => {
+                let authorization = HeaderValue::from_str(&format!("Bearer {access_token}"))
+                    .map_err(|_| ProviderError::InvalidAuthenticationHeader)?;
+                let account_id = HeaderValue::from_str(account_id)
+                    .map_err(|_| ProviderError::InvalidAuthenticationHeader)?;
+                headers.insert(header::AUTHORIZATION, authorization);
+                headers.insert("chatgpt-account-id", account_id);
+                if *is_fedramp {
+                    headers.insert("x-openai-fedramp", HeaderValue::from_static("true"));
+                }
+            }
+            (AuthStyle::Bearer | AuthStyle::Anthropic, AuthConfig::OpenAiOAuth { .. })
+            | (AuthStyle::OpenAiOAuth, AuthConfig::Bearer { .. }) => {
+                return Err(ProviderError::InvalidAuthenticationHeader);
+            }
         }
         Ok(())
     }
@@ -371,6 +441,8 @@ impl ProviderProfile {
             ProviderKind::DeepSeek => {
                 deepseek::prepare_http_request(body, upstream_model, max_bytes)
             }
+            ProviderKind::OpenAi => openai::prepare_http_request(body, upstream_model),
+            ProviderKind::OpenAiOAuth => openai_oauth::prepare_http_request(body, upstream_model),
             ProviderKind::Custom => {
                 custom::prepare_http_request(self, body, upstream_model, max_bytes)
             }
@@ -430,6 +502,8 @@ impl ProviderProfile {
     pub fn websocket_plan(&self) -> WebSocketPlan {
         match self.kind {
             ProviderKind::DeepSeek => deepseek::websocket_plan(),
+            ProviderKind::OpenAi => openai::websocket_plan(),
+            ProviderKind::OpenAiOAuth => openai_oauth::websocket_plan(),
             ProviderKind::Custom => custom::websocket_plan(self),
         }
     }
@@ -438,6 +512,8 @@ impl ProviderProfile {
     pub fn websocket_http_url(&self) -> String {
         match self.kind {
             ProviderKind::DeepSeek => deepseek::websocket_http_url(),
+            ProviderKind::OpenAi => openai::websocket_http_url(),
+            ProviderKind::OpenAiOAuth => openai_oauth::websocket_http_url(),
             ProviderKind::Custom => custom::websocket_http_url(self),
         }
     }
@@ -472,6 +548,10 @@ impl ProviderProfile {
     ) -> Result<String, ProviderError> {
         match self.kind {
             ProviderKind::DeepSeek => deepseek::rewrite_websocket_request(message, upstream_model),
+            ProviderKind::OpenAi => openai::rewrite_websocket_request(message, upstream_model),
+            ProviderKind::OpenAiOAuth => {
+                openai_oauth::rewrite_websocket_request(message, upstream_model)
+            }
             ProviderKind::Custom => {
                 custom::rewrite_websocket_request(self, message, upstream_model)
             }
@@ -509,6 +589,7 @@ impl ProviderProfile {
             transports: &'a TransportConfig,
             models_dev_id: Option<&'static str>,
             anthropic_thinking: AnthropicThinkingMode,
+            credential_scope: Option<&'a str>,
         }
 
         let bytes = serde_json::to_vec(&FingerprintInput {
@@ -523,6 +604,7 @@ impl ProviderProfile {
             transports: &self.transports,
             models_dev_id: self.models_dev_id,
             anthropic_thinking: self.anthropic_thinking,
+            credential_scope: self.credential_scope.as_deref(),
         })
         .map_err(|error| ProviderError::FingerprintSerialization(error.to_string()))?;
         Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
@@ -546,6 +628,7 @@ impl ProviderProfile {
         }
         let legacy = match self.kind {
             ProviderKind::DeepSeek => deepseek::legacy_routing_fingerprint(provider)?,
+            ProviderKind::OpenAi | ProviderKind::OpenAiOAuth => return Ok(false),
             ProviderKind::Custom => provider.routing_fingerprint()?,
         };
         Ok(candidate == legacy)
@@ -561,7 +644,10 @@ mod tests {
 
     use super::{
         DEEPSEEK_HTTP_ENDPOINT, DEEPSEEK_MODELS_DEV_ID, DEEPSEEK_MODELS_ENDPOINT, HttpTarget,
-        PROVIDER_DEFINITIONS, WebSocketPlan, resolve_provider, validate_provider,
+        OPENAI_HTTP_ENDPOINT, OPENAI_MODELS_DEV_ID, OPENAI_MODELS_ENDPOINT,
+        OPENAI_OAUTH_HTTP_ENDPOINT, OPENAI_OAUTH_MODELS_ENDPOINT, OPENAI_OAUTH_WEBSOCKET_ENDPOINT,
+        OPENAI_WEBSOCKET_ENDPOINT, PROVIDER_DEFINITIONS, WebSocketPlan, resolve_provider,
+        validate_provider,
     };
 
     fn provider(kind: ProviderKind) -> ProviderConfig {
@@ -588,11 +674,162 @@ mod tests {
         }
     }
 
+    fn canonical_openai(kind: ProviderKind, auth: AuthConfig) -> ProviderConfig {
+        let definition = super::provider_definition(kind);
+        ProviderConfig {
+            id: ProviderId::new(definition.default_namespace).unwrap(),
+            name: definition.display_name.to_owned(),
+            description: None,
+            enabled: false,
+            kind,
+            protocol: definition.protocol,
+            anthropic_thinking: None,
+            endpoints: EndpointConfig {
+                http: definition.http_endpoint.to_owned(),
+                websocket: definition.websocket_endpoint.map(str::to_owned),
+                models: definition.models_endpoint.map(str::to_owned),
+            },
+            auth,
+            transports: TransportConfig {
+                http_sse: definition.http_sse,
+                websocket: definition.websocket,
+            },
+        }
+    }
+
     #[test]
     fn registry_contains_dedicated_and_custom_implementations() {
-        assert_eq!(PROVIDER_DEFINITIONS.len(), 2);
-        assert_eq!(PROVIDER_DEFINITIONS[0].models_dev_id, Some("deepseek"));
-        assert!(PROVIDER_DEFINITIONS[1].configurable);
+        assert_eq!(PROVIDER_DEFINITIONS.len(), 4);
+        assert_eq!(PROVIDER_DEFINITIONS[0].models_dev_id, Some("openai"));
+        assert_eq!(PROVIDER_DEFINITIONS[1].models_dev_id, Some("openai"));
+        assert_eq!(PROVIDER_DEFINITIONS[2].models_dev_id, Some("deepseek"));
+        assert!(PROVIDER_DEFINITIONS[3].configurable);
+    }
+
+    #[test]
+    fn openai_key_and_oauth_use_distinct_fixed_upstreams() {
+        let api = resolve_provider(&provider(ProviderKind::OpenAi));
+        let oauth = resolve_provider(&provider(ProviderKind::OpenAiOAuth));
+
+        assert_eq!(api.protocol(), ProtocolId::OpenaiResponses);
+        assert_eq!(api.http_endpoint(), OPENAI_HTTP_ENDPOINT);
+        assert_eq!(api.websocket_endpoint(), Some(OPENAI_WEBSOCKET_ENDPOINT));
+        assert_eq!(api.model_list_url(), OPENAI_MODELS_ENDPOINT);
+        assert_eq!(api.models_dev_id(), Some(OPENAI_MODELS_DEV_ID));
+        assert_eq!(api.websocket_plan(), WebSocketPlan::Direct);
+
+        assert_eq!(oauth.http_endpoint(), OPENAI_OAUTH_HTTP_ENDPOINT);
+        assert_eq!(
+            oauth.websocket_endpoint(),
+            Some(OPENAI_OAUTH_WEBSOCKET_ENDPOINT)
+        );
+        assert_eq!(oauth.model_list_url(), OPENAI_OAUTH_MODELS_ENDPOINT);
+        assert_eq!(oauth.models_dev_id(), Some(OPENAI_MODELS_DEV_ID));
+        assert_eq!(oauth.websocket_plan(), WebSocketPlan::Direct);
+    }
+
+    #[test]
+    fn openai_oauth_applies_account_scoped_authentication() {
+        let profile = resolve_provider(&provider(ProviderKind::OpenAiOAuth));
+        let auth = AuthConfig::OpenAiOAuth {
+            access_token: "access-token".to_owned(),
+            refresh_token: "refresh-token".to_owned(),
+            account_id: "account-123".to_owned(),
+            expires_at_unix: 1_900_000_000,
+            email: Some("person@example.com".to_owned()),
+            is_fedramp: true,
+        };
+        let mut headers = hyper::HeaderMap::new();
+        profile.apply_authentication(&auth, &mut headers).unwrap();
+
+        assert_eq!(headers[hyper::header::AUTHORIZATION], "Bearer access-token");
+        assert_eq!(headers["chatgpt-account-id"], "account-123");
+        assert_eq!(headers["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(headers["x-openai-fedramp"], "true");
+    }
+
+    #[test]
+    fn openai_dedicated_configs_require_the_matching_auth_mode() {
+        let bearer = AuthConfig::Bearer {
+            api_key: "secret".to_owned(),
+        };
+        let oauth = AuthConfig::OpenAiOAuth {
+            access_token: "access".to_owned(),
+            refresh_token: "refresh".to_owned(),
+            account_id: "account".to_owned(),
+            expires_at_unix: 1_900_000_000,
+            email: None,
+            is_fedramp: false,
+        };
+
+        assert!(validate_provider(&canonical_openai(ProviderKind::OpenAi, bearer.clone())).is_ok());
+        assert!(
+            validate_provider(&canonical_openai(ProviderKind::OpenAiOAuth, oauth.clone())).is_ok()
+        );
+        assert!(validate_provider(&canonical_openai(ProviderKind::OpenAi, oauth)).is_err());
+        assert!(validate_provider(&canonical_openai(ProviderKind::OpenAiOAuth, bearer)).is_err());
+    }
+
+    #[test]
+    fn openai_oauth_rewrites_to_the_codex_backend_without_v1_duplication() {
+        let profile = resolve_provider(&provider(ProviderKind::OpenAiOAuth));
+        let prepared = profile
+            .prepare_http_request(
+                br#"{"model":"openai-oauth/gpt-test","input":"hi"}"#,
+                "gpt-test",
+                4096,
+            )
+            .unwrap();
+
+        assert_eq!(
+            prepared.target,
+            HttpTarget::PreserveIngressPath(OPENAI_OAUTH_HTTP_ENDPOINT.to_owned())
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&prepared.body).unwrap()["model"],
+            "gpt-test"
+        );
+        assert_eq!(
+            profile.websocket_http_url(),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+    }
+
+    #[test]
+    fn openai_oauth_token_rotation_keeps_the_model_cache_fingerprint() {
+        let first = canonical_openai(
+            ProviderKind::OpenAiOAuth,
+            AuthConfig::OpenAiOAuth {
+                access_token: "access-1".to_owned(),
+                refresh_token: "refresh-1".to_owned(),
+                account_id: "account".to_owned(),
+                expires_at_unix: 1_900_000_000,
+                email: None,
+                is_fedramp: false,
+            },
+        );
+        let mut rotated = first.clone();
+        rotated.auth = AuthConfig::OpenAiOAuth {
+            access_token: "access-2".to_owned(),
+            refresh_token: "refresh-2".to_owned(),
+            account_id: "account".to_owned(),
+            expires_at_unix: 1_900_003_600,
+            email: None,
+            is_fedramp: false,
+        };
+
+        assert_eq!(
+            resolve_provider(&first).routing_fingerprint().unwrap(),
+            resolve_provider(&rotated).routing_fingerprint().unwrap()
+        );
+
+        if let AuthConfig::OpenAiOAuth { account_id, .. } = &mut rotated.auth {
+            *account_id = "another-account".to_owned();
+        }
+        assert_ne!(
+            resolve_provider(&first).routing_fingerprint().unwrap(),
+            resolve_provider(&rotated).routing_fingerprint().unwrap()
+        );
     }
 
     #[test]

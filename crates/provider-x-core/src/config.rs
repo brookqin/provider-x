@@ -49,7 +49,20 @@ pub enum AnthropicThinkingMode {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AuthConfig {
-    Bearer { api_key: String },
+    Bearer {
+        api_key: String,
+    },
+    #[serde(rename = "openai_oauth")]
+    OpenAiOAuth {
+        access_token: String,
+        refresh_token: String,
+        account_id: String,
+        expires_at_unix: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<String>,
+        #[serde(default)]
+        is_fedramp: bool,
+    },
 }
 
 impl fmt::Debug for AuthConfig {
@@ -59,6 +72,13 @@ impl fmt::Debug for AuthConfig {
                 .debug_struct("Bearer")
                 .field("api_key", &"[REDACTED]")
                 .finish(),
+            Self::OpenAiOAuth { .. } => formatter
+                .debug_struct("OpenAiOAuth")
+                .field("access_token", &"[REDACTED]")
+                .field("refresh_token", &"[REDACTED]")
+                .field("account_id", &"[REDACTED]")
+                .field("email", &"[REDACTED]")
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -68,6 +88,7 @@ impl AuthConfig {
     pub fn mode_name(&self) -> &'static str {
         match self {
             Self::Bearer { .. } => "bearer",
+            Self::OpenAiOAuth { .. } => "openai_oauth",
         }
     }
 
@@ -75,6 +96,22 @@ impl AuthConfig {
     pub fn is_empty(&self) -> bool {
         match self {
             Self::Bearer { api_key } => api_key.is_empty(),
+            Self::OpenAiOAuth {
+                access_token,
+                refresh_token,
+                account_id,
+                ..
+            } => access_token.is_empty() || refresh_token.is_empty() || account_id.is_empty(),
+        }
+    }
+
+    #[must_use]
+    pub fn openai_oauth_expires_at_unix(&self) -> Option<u64> {
+        match self {
+            Self::OpenAiOAuth {
+                expires_at_unix, ..
+            } => Some(*expires_at_unix),
+            Self::Bearer { .. } => None,
         }
     }
 }
@@ -113,8 +150,13 @@ impl ProviderConfig {
     /// Returns an error when a required credential/endpoint is missing or malformed.
     pub fn validate(&self) -> Result<(), CoreError> {
         if self.auth.is_empty() {
-            return Err(CoreError::EmptyApiKey {
-                provider_id: self.id.to_string(),
+            return Err(match &self.auth {
+                AuthConfig::Bearer { .. } => CoreError::EmptyApiKey {
+                    provider_id: self.id.to_string(),
+                },
+                AuthConfig::OpenAiOAuth { .. } => CoreError::IncompleteOAuthCredentials {
+                    provider_id: self.id.to_string(),
+                },
             });
         }
         match &self.auth {
@@ -126,6 +168,31 @@ impl ProviderConfig {
                 });
             }
             AuthConfig::Bearer { .. } => {}
+            AuthConfig::OpenAiOAuth {
+                access_token,
+                refresh_token,
+                account_id,
+                email,
+                expires_at_unix,
+                ..
+            } => {
+                let invalid = [
+                    access_token.as_str(),
+                    refresh_token.as_str(),
+                    account_id.as_str(),
+                ]
+                .into_iter()
+                .any(|value| value.trim() != value || value.chars().any(char::is_control))
+                    || email.as_deref().is_some_and(|value| {
+                        value.trim() != value || value.chars().any(char::is_control)
+                    })
+                    || *expires_at_unix == 0;
+                if invalid {
+                    return Err(CoreError::InvalidOAuthCredentials {
+                        provider_id: self.id.to_string(),
+                    });
+                }
+            }
         }
         if !is_absolute_http_url(&self.endpoints.http) {
             return Err(CoreError::InvalidHttpEndpoint {

@@ -103,7 +103,7 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 
 1. 启动 ProviderX，从菜单栏项目中选择 **打开设置**。
 2. 选择 **新增供应商**。
-3. 选择供应商模板或 **自定义**。专用模板只需填写名称和 API Key；自定义供应商还需选择上游协议并填写 HTTP 地址及可选 WebSocket 地址。
+3. 选择供应商模板或 **自定义**。专用模板需要填写名称，并使用其固定的凭据方式（API Key 或浏览器账号登录）；自定义供应商还需选择上游协议并填写 HTTP 地址及可选 WebSocket 地址。
 4. 刷新模型列表，并按需检查模型名称及可选能力元数据。
 5. 保存并启用供应商。
 6. 打开 **全局设置**，启用 **Codex / ChatGPT Desktop 集成**。
@@ -125,7 +125,7 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 ~/Library/Application Support/dev.qiankun.provider-x/
 ```
 
-供应商 API Key 保存在本机私有配置中。ProviderX 使用严格的文件权限、普通文件检查、原子写入和并发修改检测。Codex 集成只更新 `~/.codex/config.toml` 中由 ProviderX 管理的设置，并保留无关配置。
+供应商凭据保存在本机私有配置中，包括 API Key 或账号登录产生的 OAuth Token。ProviderX 使用严格的文件权限、普通文件检查、原子写入和并发修改检测。Codex 集成只更新 `~/.codex/config.toml` 中由 ProviderX 管理的设置，并保留无关配置。
 
 脱敏后的请求路由、上游响应与运行错误以 JSON Lines 格式写入 `logs/provider-x-YYYY-MM-DD.log`。日志按照 Mac 的本地自然日轮换，仅保留当天及此前 9 天。每条记录包含应用版本、进程运行 ID 和级别；WebSocket 记录还包含会话 ID，可将请求、上游握手和错误关联起来。错误记录包含请求方法、不含查询参数的接口路径、入口认证结果、状态码和稳定错误码；WebSocket 错误还会记录直连或 HTTP 桥接模式、路由、失败阶段、方向及脱敏后的原因分类。入口认证失败时会保留完整路径；仅当首段符合 64 位 capability 的标准格式时，才会将该段替换为 `<redacted-capability>`。日志不会包含原始认证数据、原始 capability、请求或响应正文、原始上游错误文本，或原始 Codex 配置内容。
 

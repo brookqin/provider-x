@@ -137,9 +137,9 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 
 1. Launch ProviderX and choose **Open Settings** from its menu-bar item.
 2. Select **Add provider**.
-3. Choose a provider template or **Custom**. Dedicated templates require only a name and API key;
-   custom providers also expose the upstream protocol, HTTP endpoint, and optional WebSocket
-   endpoint.
+3. Choose a provider template or **Custom**. Dedicated templates require a name and their fixed
+   credential method (API key or browser account sign-in); custom providers also expose the
+   upstream protocol, HTTP endpoint, and optional WebSocket endpoint.
 4. Refresh the model list. Review model names and optional capability metadata as needed.
 5. Save the provider and enable it.
 6. Open **Global Settings** and enable **Codex / ChatGPT Desktop Integration**.
@@ -166,7 +166,8 @@ Provider configuration, model caches, recovery receipts, and UI preferences are 
 ~/Library/Application Support/dev.qiankun.provider-x/
 ```
 
-Provider API keys are stored locally in the private provider configuration. ProviderX uses
+Provider credentials, including API keys and OAuth tokens created by account sign-in, are stored
+locally in the private provider configuration. ProviderX uses
 restrictive permissions, regular-file checks, atomic writes, and concurrent-change detection. Codex
 integration updates only its managed settings in `~/.codex/config.toml` and preserves unrelated
 configuration.

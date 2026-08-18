@@ -290,6 +290,33 @@ fn provider_yaml_round_trip_validates_typed_ids() {
 }
 
 #[test]
+fn openai_oauth_credentials_round_trip_and_remain_redacted() {
+    let mut configured = provider("openai-oauth", false);
+    configured.kind = provider_x_core::ProviderKind::OpenAiOAuth;
+    configured.auth = AuthConfig::OpenAiOAuth {
+        access_token: "access-secret".to_owned(),
+        refresh_token: "refresh-secret".to_owned(),
+        account_id: "account-secret".to_owned(),
+        expires_at_unix: 1_900_000_000,
+        email: Some("person@example.com".to_owned()),
+        is_fedramp: false,
+    };
+    let yaml = yaml_serde::to_string(&configured).unwrap();
+    let parsed: ProviderConfig = yaml_serde::from_str(&yaml).unwrap();
+    assert_eq!(parsed, configured);
+
+    let diagnostic = format!("{configured:?}");
+    for secret in [
+        "access-secret",
+        "refresh-secret",
+        "account-secret",
+        "person@example.com",
+    ] {
+        assert!(!diagnostic.contains(secret));
+    }
+}
+
+#[test]
 fn legacy_deepseek_responses_config_migrates_to_the_dedicated_provider() {
     let legacy = PROVIDERS_YAML
         .replace("compatible-primary", "deepseek")

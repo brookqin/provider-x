@@ -22,11 +22,15 @@ use crate::runtime_log::RuntimeLog;
 use crate::storage::{
     ModelRegistryStore, ModelRegistryStoreError, SecureFileError, SingleInstanceGuard,
 };
+use provider_x_providers::{
+    OpenAiOAuthClient, OpenAiOAuthError, openai_oauth_needs_refresh as needs_refresh,
+};
 
 const STARTUP_HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(35);
 const LISTENER_PORT_RANGE_WIDTH: u16 = 10;
 
 pub(crate) struct ManualRefreshOutcome {
+    pub(crate) provider: ProviderConfig,
     pub(crate) preview: RefreshPreview,
     pub(crate) registry_matched_models: usize,
     pub(crate) registry_warning: Option<String>,
@@ -45,9 +49,18 @@ pub(crate) struct AppServices {
     pub(crate) model_registry: ModelRegistryStore,
     pub(crate) codex_config: CodexConfigEditor,
     runtime_log: Arc<RuntimeLog>,
+    openai_oauth: Arc<OpenAiOAuthRuntime>,
     // Rust drops fields in declaration order. Keep the process lock last so a
     // successor cannot start until the egress handle and runtime are gone.
     _single_instance: Arc<SingleInstanceGuard>,
+}
+
+struct OpenAiOAuthRuntime {
+    client: OpenAiOAuthClient,
+    refresh_lock: tokio::sync::Mutex<()>,
+    control: Arc<Mutex<ControlPlane>>,
+    egress: Arc<EgressHandle>,
+    runtime_log: Arc<RuntimeLog>,
 }
 
 pub(crate) struct EgressHandle {
@@ -64,6 +77,144 @@ impl Drop for EgressHandle {
     fn drop(&mut self) {
         let _ = self.shutdown.send(true);
     }
+}
+
+impl OpenAiOAuthRuntime {
+    async fn refresh_provider_if_needed(
+        self: &Arc<Self>,
+        mut provider: ProviderConfig,
+    ) -> Result<ProviderConfig, String> {
+        if !matches!(provider.kind, provider_x_core::ProviderKind::OpenAiOAuth)
+            || !needs_refresh(&provider.auth, unix_timestamp())
+        {
+            return Ok(provider);
+        }
+
+        let _guard = self.refresh_lock.lock().await;
+        let saved = self
+            .control
+            .lock()
+            .map_err(|_| rust_i18n::t!("app.internal.control_lock").to_string())?
+            .providers()
+            .providers
+            .iter()
+            .find(|candidate| candidate.id == provider.id)
+            .cloned();
+        if let Some(saved) = saved.as_ref()
+            && oauth_account_id(&saved.auth) == oauth_account_id(&provider.auth)
+        {
+            provider.auth.clone_from(&saved.auth);
+        }
+        if !needs_refresh(&provider.auth, unix_timestamp()) {
+            return Ok(provider);
+        }
+
+        let source_auth = provider.auth.clone();
+        provider.auth = self
+            .client
+            .refresh(&source_auth)
+            .await
+            .map_err(|error| error.to_string())?;
+        if oauth_account_id(&source_auth) != oauth_account_id(&provider.auth) {
+            provider.enabled = false;
+        }
+        if saved.is_none() {
+            return Ok(provider);
+        }
+
+        let control = Arc::clone(&self.control);
+        let egress = Arc::clone(&self.egress);
+        let updated = provider.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut control = control
+                .lock()
+                .map_err(|_| rust_i18n::t!("app.internal.control_lock").to_string())?;
+            let Some(current) = control
+                .providers()
+                .providers
+                .iter()
+                .find(|candidate| candidate.id == updated.id)
+                .cloned()
+            else {
+                return Ok(updated);
+            };
+            if current.auth != source_auth {
+                return Ok(current);
+            }
+            let prepared = control
+                .prepare_mutation(ControlMutation::SaveProvider(updated.clone()))
+                .map_err(|error| error.to_string())?;
+            let (providers, cache) = prepared.documents();
+            let reload = egress
+                .state
+                .prepare_reload(providers, cache)
+                .map_err(|error| error.to_string())?;
+            control
+                .commit_mutation(prepared)
+                .map_err(|error| error.to_string())?;
+            egress.state.commit_reload(reload);
+            Ok(updated)
+        })
+        .await
+        .map_err(|_| "OpenAI OAuth refresh persistence task failed".to_owned())?
+    }
+
+    async fn refresh_saved_providers(self: &Arc<Self>) {
+        let providers = if let Ok(control) = self.control.lock() {
+            control
+                .providers()
+                .providers
+                .iter()
+                .filter(|provider| {
+                    provider.kind == provider_x_core::ProviderKind::OpenAiOAuth
+                        && needs_refresh(&provider.auth, unix_timestamp())
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            self.runtime_log.record_runtime_error(
+                "openai_oauth_refresh_failed",
+                "control plane lock unavailable",
+            );
+            return;
+        };
+        for provider in providers {
+            let provider_id = provider.id.to_string();
+            if let Err(error) = self.refresh_provider_if_needed(provider).await {
+                self.runtime_log.record_runtime_error(
+                    "openai_oauth_refresh_failed",
+                    &format!("provider_id={provider_id}; error={error}"),
+                );
+            }
+        }
+    }
+}
+
+fn oauth_account_id(auth: &provider_x_core::AuthConfig) -> Option<&str> {
+    match auth {
+        provider_x_core::AuthConfig::OpenAiOAuth { account_id, .. } => Some(account_id),
+        provider_x_core::AuthConfig::Bearer { .. } => None,
+    }
+}
+
+fn unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn build_openai_oauth_runtime(
+    control: &Arc<Mutex<ControlPlane>>,
+    egress: &Arc<EgressHandle>,
+    runtime_log: &Arc<RuntimeLog>,
+) -> anyhow::Result<Arc<OpenAiOAuthRuntime>> {
+    Ok(Arc::new(OpenAiOAuthRuntime {
+        client: OpenAiOAuthClient::new(std::time::Duration::from_secs(10))?,
+        refresh_lock: tokio::sync::Mutex::new(()),
+        control: Arc::clone(control),
+        egress: Arc::clone(egress),
+        runtime_log: Arc::clone(runtime_log),
+    }))
 }
 
 impl Global for AppServices {}
@@ -145,21 +296,25 @@ impl AppServices {
                 .shutdown_grace_ms
                 .saturating_add(3_000),
         );
+        let egress = Arc::new(EgressHandle {
+            state: egress_state,
+            address,
+            ingress_capability,
+            shutdown,
+            failure,
+            task: Mutex::new(Some(task)),
+            shutdown_wait,
+        });
+        let control = Arc::new(Mutex::new(control));
+        let openai_oauth = build_openai_oauth_runtime(&control, &egress, &runtime_log)?;
         let services = Self {
-            egress: Arc::new(EgressHandle {
-                state: egress_state,
-                address,
-                ingress_capability,
-                shutdown,
-                failure,
-                task: Mutex::new(Some(task)),
-                shutdown_wait,
-            }),
+            egress,
             runtime,
-            control: Arc::new(Mutex::new(control)),
+            control,
             model_registry,
             codex_config,
             runtime_log,
+            openai_oauth,
             _single_instance: single_instance,
         };
         if listener_port.is_none() && active_integration.is_some() {
@@ -167,6 +322,7 @@ impl AppServices {
                 .reconcile_codex_listener_if_active()
                 .map_err(anyhow::Error::msg)?;
         }
+        services.start_openai_oauth_refresh_loop();
         Ok(services)
     }
 
@@ -239,12 +395,17 @@ impl AppServices {
         existing: Option<ProviderModelCache>,
         timestamp: String,
     ) -> Result<ManualRefreshOutcome, String> {
+        let provider = self
+            .openai_oauth
+            .refresh_provider_if_needed(provider)
+            .await?;
         let mut preview = client
             .refresh_preview(&provider, existing.as_ref(), timestamp.clone())
             .await
             .map_err(|error| error.to_string())?;
         if preview.needs_review.is_empty() {
             return Ok(ManualRefreshOutcome {
+                provider,
                 preview,
                 registry_matched_models: 0,
                 registry_warning: None,
@@ -288,10 +449,31 @@ impl AppServices {
             }
         }
         Ok(ManualRefreshOutcome {
+            provider,
             preview,
             registry_matched_models: enrichment.matched_models.len(),
             registry_warning: (!warnings.is_empty()).then(|| warnings.join("；")),
         })
+    }
+
+    pub(crate) async fn login_openai_oauth(&self) -> Result<provider_x_core::AuthConfig, String> {
+        self.openai_oauth
+            .client
+            .login_with_browser()
+            .await
+            .map_err(|error| localized_openai_oauth_error(&error))
+    }
+
+    fn start_openai_oauth_refresh_loop(&self) {
+        let oauth = Arc::clone(&self.openai_oauth);
+        self.runtime.spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                oauth.refresh_saved_providers().await;
+            }
+        });
     }
 
     pub(crate) fn egress_ready(&self) -> Result<(), String> {
@@ -414,6 +596,39 @@ impl AppServices {
             }
         }
         self.egress_ready()
+    }
+}
+
+fn localized_openai_oauth_error(error: &OpenAiOAuthError) -> String {
+    match error {
+        OpenAiOAuthError::CallbackUnavailable => {
+            rust_i18n::t!("app.provider.oauth.error.callback_unavailable").to_string()
+        }
+        OpenAiOAuthError::LoginTimeout => {
+            rust_i18n::t!("app.provider.oauth.error.timeout").to_string()
+        }
+        OpenAiOAuthError::InvalidCallback => {
+            rust_i18n::t!("app.provider.oauth.error.invalid_callback").to_string()
+        }
+        OpenAiOAuthError::BrowserOpen => {
+            rust_i18n::t!("app.provider.oauth.error.browser_open").to_string()
+        }
+        OpenAiOAuthError::ResponseStatus(status) => {
+            rust_i18n::t!("app.provider.oauth.error.response_status", status = status).to_string()
+        }
+        OpenAiOAuthError::MissingAccount => {
+            rust_i18n::t!("app.provider.oauth.error.missing_account").to_string()
+        }
+        OpenAiOAuthError::InvalidCredentials => {
+            rust_i18n::t!("app.provider.oauth.error.invalid_credentials").to_string()
+        }
+        OpenAiOAuthError::RequestBuild
+        | OpenAiOAuthError::Transport
+        | OpenAiOAuthError::ResponseTimeout
+        | OpenAiOAuthError::InvalidResponse
+        | OpenAiOAuthError::NetworkConfiguration => {
+            rust_i18n::t!("app.provider.oauth.error.service").to_string()
+        }
     }
 }
 

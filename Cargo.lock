@@ -5107,17 +5107,24 @@ dependencies = [
 name = "provider-x-providers"
 version = "0.7.0"
 dependencies = [
+ "base64",
  "bytes",
+ "getrandom 0.4.3",
  "hex",
+ "http-body-util",
  "hyper",
+ "hyper-util",
  "protocol-anthropic-messages",
  "protocol-openai-chat-completions",
  "protocol-openai-responses",
  "provider-x-core",
+ "provider-x-network",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.20",
+ "tokio",
+ "url",
 ]
 
 [[package]]

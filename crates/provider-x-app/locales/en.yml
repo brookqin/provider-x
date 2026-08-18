@@ -40,6 +40,24 @@ app:
     api_key:
       show: Show API Key
       hide: Hide API Key
+    oauth:
+      account: ChatGPT Account
+      not_signed_in: Not signed in
+      sign_in: Sign in
+      sign_in_again: Sign in again
+      signing_in: Waiting for OpenAI sign-in…
+      signed_in: OpenAI account signed in. Refresh the model list, then save.
+      login_required: Sign in with an OpenAI account first
+      task_failed: OpenAI sign-in task exited unexpectedly
+      error:
+        callback_unavailable: Could not start the local sign-in callback. Make sure port 1455 or 1457 is available.
+        timeout: OpenAI sign-in timed out. Try again.
+        invalid_callback: The OpenAI sign-in callback was invalid. Try again.
+        browser_open: Could not open the system browser.
+        response_status: OpenAI sign-in service returned HTTP %{status}.
+        missing_account: The sign-in result did not include a ChatGPT account.
+        invalid_credentials: The OpenAI account session expired. Sign in again.
+        service: Could not complete OpenAI sign-in. Check the network connection and try again.
     add_title: Add Provider
     settings_title: Provider Settings
     add_subtitle: Enter connection details, refresh the model list, then save.

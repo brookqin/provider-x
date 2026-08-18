@@ -16,6 +16,7 @@ pub(crate) const DEFINITION: ProviderDefinition = ProviderDefinition {
     configurable: true,
     protocol: provider_x_core::ProtocolId::OpenaiResponses,
     http_endpoint: "",
+    websocket_endpoint: None,
     models_endpoint: None,
     http_sse: true,
     websocket: false,
@@ -39,6 +40,7 @@ pub(crate) fn profile(provider: &ProviderConfig) -> ProviderProfile {
         transports: provider.transports.clone(),
         models_dev_id: DEFINITION.models_dev_id,
         anthropic_thinking: provider.anthropic_thinking_mode(),
+        credential_scope: None,
         accepts_legacy_fingerprint: true,
     }
 }

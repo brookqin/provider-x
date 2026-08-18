@@ -679,6 +679,7 @@ struct SettingsView {
     websocket_url: Entity<InputState>,
     api_key: Entity<InputState>,
     api_key_visibility: ApiKeyVisibility,
+    openai_oauth_auth: Option<AuthConfig>,
     protocol_select: Entity<SelectState<Vec<&'static str>>>,
     model_search: Entity<InputState>,
     model_display_name: Entity<InputState>,
@@ -806,6 +807,7 @@ impl SettingsView {
                     .masked(true)
             }),
             api_key_visibility: ApiKeyVisibility::Hidden,
+            openai_oauth_auth: None,
             protocol_select,
             model_search,
             model_display_name: cx.new(|cx| {
@@ -934,6 +936,7 @@ impl SettingsView {
             return;
         }
         let definition = provider_definition(kind);
+        self.openai_oauth_auth = None;
         if definition.configurable {
             for input in [
                 &self.provider_name,
@@ -953,7 +956,14 @@ impl SettingsView {
             self.http_url.update(cx, |input, cx| {
                 input.set_value(definition.http_endpoint, window, cx);
             });
-            self.websocket_url
+            self.websocket_url.update(cx, |input, cx| {
+                input.set_value(
+                    definition.websocket_endpoint.unwrap_or_default(),
+                    window,
+                    cx,
+                );
+            });
+            self.api_key
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
         self.protocol = definition.protocol;
@@ -984,11 +994,6 @@ impl SettingsView {
             ))?
         };
         let websocket = self.websocket_url.read(cx).value();
-        let entered_api_key = self.api_key.read(cx).unmask_value().to_string();
-        anyhow::ensure!(
-            !entered_api_key.trim().is_empty(),
-            tr!("app.provider.api_key_required")
-        );
         let existing = if let Some(editing) = self.editing_provider.as_ref() {
             let control = self
                 .services
@@ -1007,11 +1012,15 @@ impl SettingsView {
         } else {
             None
         };
-        let auth = AuthConfig::Bearer {
-            api_key: entered_api_key,
-        };
-        let enabled = existing.as_ref().is_some_and(|provider| provider.enabled);
+        let auth = self.draft_auth(cx)?;
         let kind = self.provider_template;
+        let oauth_account_changed = kind == ProviderKind::OpenAiOAuth
+            && existing.as_ref().is_some_and(|provider| {
+                openai_oauth_account_id(&provider.auth) != openai_oauth_account_id(&auth)
+            });
+        let enabled = existing
+            .as_ref()
+            .is_some_and(|provider| provider.enabled && !oauth_account_changed);
         let definition = provider_definition(kind);
         let protocol = if definition.configurable {
             self.protocol
@@ -1038,22 +1047,41 @@ impl SettingsView {
                 } else {
                     definition.http_endpoint.to_owned()
                 },
-                websocket: (definition.configurable
-                    && protocol == ProtocolId::OpenaiResponses
-                    && !websocket.trim().is_empty())
-                .then(|| websocket.trim().to_owned()),
+                websocket: if definition.configurable {
+                    (protocol == ProtocolId::OpenaiResponses && !websocket.trim().is_empty())
+                        .then(|| websocket.trim().to_owned())
+                } else {
+                    definition.websocket_endpoint.map(str::to_owned)
+                },
                 models: definition.models_endpoint.map(str::to_owned),
             },
             auth,
             transports: TransportConfig {
                 http_sse: true,
-                websocket: definition.configurable
-                    && protocol == ProtocolId::OpenaiResponses
-                    && self.websocket_enabled,
+                websocket: if definition.configurable {
+                    protocol == ProtocolId::OpenaiResponses && self.websocket_enabled
+                } else {
+                    definition.websocket
+                },
             },
         };
         validate_provider(&provider)?;
         Ok(provider)
+    }
+
+    fn draft_auth(&self, cx: &App) -> anyhow::Result<AuthConfig> {
+        if self.provider_template == ProviderKind::OpenAiOAuth {
+            return self
+                .openai_oauth_auth
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!(tr!("app.provider.oauth.login_required")));
+        }
+        let api_key = self.api_key.read(cx).unmask_value().to_string();
+        anyhow::ensure!(
+            !api_key.trim().is_empty(),
+            tr!("app.provider.api_key_required")
+        );
+        Ok(AuthConfig::Bearer { api_key })
     }
 
     fn start_refresh(&mut self, cx: &mut Context<Self>) {
@@ -1111,10 +1139,11 @@ impl SettingsView {
                 this.update(cx, |view, cx| {
                     match result {
                         Ok(outcome) => {
+                            let refreshed_provider = outcome.provider;
                             let preview = outcome.preview;
                             let total = preview.cache.models.len();
                             let registry = outcome.registry_matched_models;
-                            view.preview = Some((provider, preview));
+                            view.preview = Some((refreshed_provider, preview));
                             view.reviewing_model = None;
                             view.operation = OperationState::Message {
                                 success: outcome.registry_warning.is_none(),
@@ -1268,6 +1297,45 @@ impl SettingsView {
                                     },
                                     |warning| tr!("app.provider.saved_warning", warning = warning),
                                 ),
+                            };
+                        }
+                        Err(error) => {
+                            view.operation = OperationState::Message {
+                                success: false,
+                                text: error,
+                            };
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn start_openai_oauth_login(&mut self, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        let services = self.services.clone();
+        let receiver = self
+            .services
+            .spawn(async move { services.login_openai_oauth().await });
+        self.operation = OperationState::Busy(tr!("app.provider.oauth.signing_in"));
+        cx.spawn(async move |this, cx| {
+            let result = receiver
+                .await
+                .unwrap_or_else(|_| Err(tr!("app.provider.oauth.task_failed")));
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |view, cx| {
+                    match result {
+                        Ok(auth) => {
+                            view.openai_oauth_auth = Some(auth);
+                            view.preview = None;
+                            view.operation = OperationState::Message {
+                                success: true,
+                                text: tr!("app.provider.oauth.signed_in"),
                             };
                         }
                         Err(error) => {
@@ -1555,7 +1623,14 @@ impl SettingsView {
             input.set_value(provider.endpoints.websocket.unwrap_or_default(), window, cx);
         });
         let api_key = match &provider.auth {
-            AuthConfig::Bearer { api_key } => api_key.clone(),
+            AuthConfig::Bearer { api_key } => {
+                self.openai_oauth_auth = None;
+                api_key.clone()
+            }
+            AuthConfig::OpenAiOAuth { .. } => {
+                self.openai_oauth_auth = Some(provider.auth.clone());
+                String::new()
+            }
         };
         self.api_key.update(cx, |input, cx| {
             input.set_value(api_key, window, cx);
@@ -1599,6 +1674,7 @@ impl SettingsView {
         self.api_key
             .update(cx, |input, cx| input.set_masked(true, window, cx));
         self.api_key_visibility = ApiKeyVisibility::Hidden;
+        self.openai_oauth_auth = None;
         self.websocket_enabled = false;
         self.provider_select.update(cx, |select, cx| {
             select.set_selected_value(&provider_template_label(ProviderKind::DeepSeek), window, cx);
@@ -2212,36 +2288,14 @@ impl SettingsView {
                         ))
                 },
             )
-            .child(field(
-                "API Key",
-                Input::new(&self.api_key).suffix(
-                    Button::new("toggle-api-key-visibility")
-                        .icon(if self.api_key_visibility == ApiKeyVisibility::Visible {
-                            IconName::EyeOff
-                        } else {
-                            IconName::Eye
-                        })
-                        .xsmall()
-                        .ghost()
-                        .tab_stop(false)
-                        .tooltip(if self.api_key_visibility == ApiKeyVisibility::Visible {
-                            tr!("app.provider.api_key.hide")
-                        } else {
-                            tr!("app.provider.api_key.show")
-                        })
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.api_key_visibility = match view.api_key_visibility {
-                                ApiKeyVisibility::Hidden => ApiKeyVisibility::Visible,
-                                ApiKeyVisibility::Visible => ApiKeyVisibility::Hidden,
-                            };
-                            let masked = view.api_key_visibility == ApiKeyVisibility::Hidden;
-                            view.api_key.update(cx, |input, cx| {
-                                input.set_masked(masked, window, cx);
-                            });
-                            cx.notify();
-                        })),
-                ),
-            ))
+            .when(
+                self.provider_template != ProviderKind::OpenAiOAuth,
+                |editor| editor.child(self.render_api_key_field(cx)),
+            )
+            .when(
+                self.provider_template == ProviderKind::OpenAiOAuth,
+                |editor| editor.child(self.render_openai_oauth_field(busy, cx)),
+            )
             .when(
                 provider_definition(self.provider_template).configurable,
                 |editor| {
@@ -2269,6 +2323,84 @@ impl SettingsView {
                             ),
                     )
                 },
+            )
+    }
+
+    fn render_api_key_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        field(
+            "API Key",
+            Input::new(&self.api_key).suffix(
+                Button::new("toggle-api-key-visibility")
+                    .icon(if self.api_key_visibility == ApiKeyVisibility::Visible {
+                        IconName::EyeOff
+                    } else {
+                        IconName::Eye
+                    })
+                    .xsmall()
+                    .ghost()
+                    .tab_stop(false)
+                    .tooltip(if self.api_key_visibility == ApiKeyVisibility::Visible {
+                        tr!("app.provider.api_key.hide")
+                    } else {
+                        tr!("app.provider.api_key.show")
+                    })
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.api_key_visibility = match view.api_key_visibility {
+                            ApiKeyVisibility::Hidden => ApiKeyVisibility::Visible,
+                            ApiKeyVisibility::Visible => ApiKeyVisibility::Hidden,
+                        };
+                        let masked = view.api_key_visibility == ApiKeyVisibility::Hidden;
+                        view.api_key.update(cx, |input, cx| {
+                            input.set_masked(masked, window, cx);
+                        });
+                        cx.notify();
+                    })),
+            ),
+        )
+    }
+
+    fn render_openai_oauth_field(&self, busy: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let signed_in = self.openai_oauth_auth.is_some();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .h(px(18.0))
+                    .line_height(px(18.0))
+                    .text_size(px(TEXT_SIZE_BODY))
+                    .font_medium()
+                    .child(tr!("app.provider.oauth.account")),
+            )
+            .child(
+                div()
+                    .h(px(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_size(px(TEXT_SIZE_BODY))
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(openai_oauth_account_label(self.openai_oauth_auth.as_ref())),
+                    )
+                    .child(
+                        Button::new("openai-oauth-login")
+                            .label(if signed_in {
+                                tr!("app.provider.oauth.sign_in_again")
+                            } else {
+                                tr!("app.provider.oauth.sign_in")
+                            })
+                            .small()
+                            .disabled(busy)
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.start_openai_oauth_login(cx);
+                            })),
+                    ),
             )
     }
 
@@ -3087,6 +3219,23 @@ fn provider_kind_from_label(label: &str) -> Option<ProviderKind> {
         .iter()
         .find(|definition| provider_template_label(definition.kind) == label)
         .map(|definition| definition.kind)
+}
+
+fn openai_oauth_account_label(auth: Option<&AuthConfig>) -> String {
+    match auth {
+        Some(AuthConfig::OpenAiOAuth {
+            email: Some(email), ..
+        }) => email.clone(),
+        Some(AuthConfig::OpenAiOAuth { account_id, .. }) => account_id.clone(),
+        Some(AuthConfig::Bearer { .. }) | None => tr!("app.provider.oauth.not_signed_in"),
+    }
+}
+
+fn openai_oauth_account_id(auth: &AuthConfig) -> Option<&str> {
+    match auth {
+        AuthConfig::OpenAiOAuth { account_id, .. } => Some(account_id),
+        AuthConfig::Bearer { .. } => None,
+    }
 }
 
 fn protocol_label(protocol: ProtocolId) -> &'static str {

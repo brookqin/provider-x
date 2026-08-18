@@ -193,6 +193,10 @@ pub enum ProtocolId {
 pub enum ProviderKind {
     #[serde(rename = "deepseek")]
     DeepSeek,
+    #[serde(rename = "openai")]
+    OpenAi,
+    #[serde(rename = "openai_oauth")]
+    OpenAiOAuth,
     #[default]
     Custom,
 }

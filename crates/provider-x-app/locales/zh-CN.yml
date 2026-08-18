@@ -40,6 +40,24 @@ app:
     api_key:
       show: 显示 API Key
       hide: 隐藏 API Key
+    oauth:
+      account: ChatGPT 账号
+      not_signed_in: 未登录
+      sign_in: 登录
+      sign_in_again: 重新登录
+      signing_in: 正在等待 OpenAI 登录…
+      signed_in: OpenAI 账号已登录，请刷新模型列表后保存。
+      login_required: 请先登录 OpenAI 账号
+      task_failed: OpenAI 登录任务意外退出
+      error:
+        callback_unavailable: 无法启动本地登录回调，请确认端口 1455 或 1457 可用。
+        timeout: OpenAI 登录已超时，请重试。
+        invalid_callback: OpenAI 登录回调无效，请重试。
+        browser_open: 无法打开系统浏览器。
+        response_status: OpenAI 登录服务返回 HTTP %{status}。
+        missing_account: 登录结果中没有 ChatGPT 账号信息。
+        invalid_credentials: OpenAI 账号会话已失效，请重新登录。
+        service: 无法完成 OpenAI 登录，请检查网络后重试。
     add_title: 新增供应商
     settings_title: 供应商设置
     add_subtitle: 填写连接信息，刷新模型列表后保存。

@@ -49,6 +49,12 @@ pub enum CoreError {
     #[error("provider {provider_id} has a bearer API key that cannot be used in an HTTP header")]
     InvalidApiKey { provider_id: String },
 
+    #[error("provider {provider_id} has incomplete OpenAI OAuth credentials")]
+    IncompleteOAuthCredentials { provider_id: String },
+
+    #[error("provider {provider_id} has invalid OpenAI OAuth credentials")]
+    InvalidOAuthCredentials { provider_id: String },
+
     #[error("provider {provider_id} HTTP endpoint must be absolute")]
     InvalidHttpEndpoint { provider_id: String },
 
