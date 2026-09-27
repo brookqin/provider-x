@@ -21,6 +21,7 @@ APP_VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' "$PROJECT_DIR/Cargo.toml" | 
 [[ -f "$LICENSE_FILE" ]] || { print -u2 "GPL license missing: $LICENSE_FILE"; exit 1; }
 [[ -f "$ICON" ]] || { print -u2 "app icon missing: $ICON"; exit 1; }
 [[ -f "$APP_DIR/Contents/Resources/LICENSE-GPUI-OMARCHY" ]] || { print -u2 "gpui-omarchy license missing"; exit 1; }
+[[ -f "$APP_DIR/Contents/Resources/LICENSE-LOBE-ICONS" ]] || { print -u2 "Lobe Icons license missing"; exit 1; }
 [[ ! -e "$APP_DIR/Contents/Resources/ui" ]] || { print -u2 "obsolete script UI bundled"; exit 1; }
 [[ -n "$APP_VERSION" ]] || { print -u2 "workspace version not found"; exit 1; }
 grep -q "GNU GENERAL PUBLIC LICENSE" "$LICENSE_FILE"

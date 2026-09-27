@@ -194,6 +194,7 @@ pub(crate) fn register(cx: &mut App) -> anyhow::Result<()> {
 
 #[derive(Clone)]
 pub(crate) struct ProviderSummary {
+    pub preset: String,
     pub id: String,
     pub name: String,
     pub enabled: bool,
@@ -235,6 +236,7 @@ impl From<&ProviderConfig> for ProviderSummary {
         }
         Self {
             id: provider.id.to_string(),
+            preset: provider.preset.clone(),
             name: provider.name.clone(),
             enabled: provider.enabled,
             auth_label,
@@ -1218,6 +1220,7 @@ mod tests {
         let mut provider = compile_instance(input, None, &[]).unwrap();
         provider.enabled = false;
         let summary = ProviderSummary::from(&provider);
+        assert_eq!(summary.preset, "ollama");
         assert!(!summary.enabled);
         assert_eq!(summary.model_count, 4);
         assert_eq!(summary.enabled_model_count, 3);

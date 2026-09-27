@@ -1,4 +1,5 @@
 //! Native settings view. The control plane owns operations and persisted preferences.
+mod brand_icons;
 mod providers;
 use crate::{
     runtime::AppServices,
@@ -91,6 +92,7 @@ pub(crate) struct Settings {
     host: SettingsState,
     services: AppServices,
     data: SettingsSnapshot,
+    provider_icons: brand_icons::ProviderIcons,
     brand_mark_light: Arc<Image>,
     brand_mark_dark: Arc<Image>,
     page: Page,
@@ -220,6 +222,7 @@ impl Settings {
             host,
             services,
             data,
+            provider_icons: brand_icons::ProviderIcons::default(),
             brand_mark_light: Arc::new(Image::from_bytes(
                 ImageFormat::Png,
                 include_bytes!("../resources/app-icon/settings-light.png").to_vec(),

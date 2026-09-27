@@ -313,6 +313,7 @@ impl Settings {
                 .gap_4()
                 .hover(|style| style.bg(theme.hover_fill()))
                 .disabled(self.data.busy || self.data.settings_pending)
+                .child(self.provider_icons.render(&provider.preset, cx))
                 .child(
                     column()
                         .gap_1()
@@ -439,6 +440,7 @@ impl Settings {
                     ))
                     .min_h(px(82.))
                     .justify_start()
+                    .child(self.provider_icons.render(family.id, cx))
                     .child(
                         column()
                             .gap_2()

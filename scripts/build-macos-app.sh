@@ -40,6 +40,8 @@ cp "$PROJECT_DIR/crates/provider-x-app/resources/LICENSE-GPUI-OMARCHY" \
   "$APP_DIR/Contents/Resources/LICENSE-GPUI-OMARCHY"
 cp "$PROJECT_DIR/crates/provider-x-app/resources/icons/LICENSE-LUCIDE" \
   "$APP_DIR/Contents/Resources/LICENSE-LUCIDE"
+cp "$PROJECT_DIR/crates/provider-x-app/resources/providers/LICENSE" \
+  "$APP_DIR/Contents/Resources/LICENSE-LOBE-ICONS"
 iconutil --convert icns \
   --output "$APP_DIR/Contents/Resources/AppIcon.icns" \
   "$PROJECT_DIR/crates/provider-x-app/resources/app-icon/AppIcon.iconset"
