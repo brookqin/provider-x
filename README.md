@@ -43,6 +43,7 @@ configured provider.
 - Optionally show a Dock icon to reopen settings. Hiding the icon keeps the settings window open;
   closing the window keeps the router running.
 - Use grouped settings with switches and select menus, including multiple reasoning-level choices.
+  The provider page lists each connection with its connection mode, selected models, and enabled-model count; click a row to edit it, or add a connection in a dialog. Removing a connection requires confirmation.
   Appearance can follow the system; automatic language uses the system language and falls back to
   English when unsupported. The transparent title bar blends into the window content.
 - Respect `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` for upstream connections.

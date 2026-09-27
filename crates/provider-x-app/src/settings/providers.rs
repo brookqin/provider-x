@@ -1,66 +1,413 @@
-use gpui_kit::StatefulInteractiveElement;
+use gpui_kit::{
+    InteractiveElement, IntoElement, StatefulInteractiveElement, prelude::FluentBuilder,
+};
 
 use super::{
-    ButtonVariant, CheckboxState, Context, CredentialKind, Div, FontWeight, MetadataSource,
-    ModelDraft, OperationKind, ParentElement, Point, ProtocolId, Settings, SharedString, Styled,
-    Window, column, div, heading, muted, px, row, setting, text, toggled, ui,
+    ActiveTheme, ButtonVariant, CheckboxState, Context, CredentialKind, Div, FontWeight,
+    MetadataSource, ModelDraft, OperationKind, ParentElement, Point, ProtocolId, Settings,
+    SharedString, Styled, Window, column, div, heading, muted, px, row, setting, text, toggled, ui,
 };
 
 impl Settings {
-    #[allow(clippy::too_many_lines)] // Declarative provider directory layout.
-    pub(super) fn providers(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        if !self.data.draft.preset.is_empty() {
-            return self.provider_editor(window, cx);
+    fn provider_dialog_width(window: &Window) -> f32 {
+        (f32::from(window.viewport_size().width) - 64.).min(800.)
+    }
+
+    fn open_provider_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.provider_return_focus = window.focused(cx);
+        self.provider_dialog_open = true;
+        self.provider_commit_pending = false;
+        self.provider_removal = None;
+        self.provider_scroll.set_offset(Point::default());
+        self.model_editor = None;
+        self.model_page = 0;
+        self.advanced = false;
+        self.restore_fields(window, cx);
+        self.restore_choices(window, cx);
+        self.provider_dialog_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn close_provider_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.data.busy || self.data.settings_pending {
+            return;
         }
-        let mut content = column().child(heading("providers", "intro", cx));
-        if !self.data.providers.is_empty() {
-            let mut configured = ui::panel(text("your_connections"), cx);
-            for provider in &self.data.providers {
-                let id = provider.id.clone();
-                configured = configured.child(
-                    row()
-                        .child(
-                            column()
-                                .gap_1()
-                                .flex_1()
-                                .child(provider.name.clone())
-                                .child(muted(
-                                    format!(
-                                        "{} · {}",
-                                        id,
-                                        text(if provider.enabled {
-                                            "enabled"
-                                        } else {
-                                            "disabled"
-                                        })
-                                    ),
-                                    cx,
-                                )),
+        self.provider_dialog_open = false;
+        self.provider_commit_pending = false;
+        self.provider_removal = None;
+        self.model_editor = None;
+        self.host.clear_draft();
+        self.refresh(window, cx);
+        self.restore_fields(window, cx);
+        if let Some(focus) = self.provider_return_focus.take() {
+            focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn cancel_provider_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.provider_removal = None;
+        self.provider_remove_button_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn provider_removal_dialog(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let name = self
+            .data
+            .providers
+            .iter()
+            .find(|provider| Some(&provider.id) == self.provider_removal.as_ref())
+            .map_or(self.data.draft.name.as_str(), |provider| {
+                provider.name.as_str()
+            });
+        let title = rust_i18n::t!("settings.remove_confirmation", name = name).to_string();
+        let popup = ui::dialog_popup(cx)
+            .child(ui::dialog_title(title, cx))
+            .child(ui::dialog_description(text("remove_confirmation_hint"), cx))
+            .child(
+                row()
+                    .justify_end()
+                    .child(
+                        ui::dialog_button(
+                            "cancel-provider-removal",
+                            text("cancel"),
+                            ButtonVariant::Secondary,
+                            cx,
                         )
-                        .child(
-                            ui::button(
-                                SharedString::from(format!("open-{id}")),
-                                text("manage"),
-                                ButtonVariant::Outline,
-                                cx,
-                            )
-                            .disabled(self.data.busy)
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    if let Err(error) = this.host.open(&id, &this.services) {
-                                        this.host.set_message(error.to_string());
-                                    }
-                                    this.refresh(window, cx);
-                                    this.model_editor = None;
-                                    this.restore_fields(window, cx);
-                                    this.restore_choices(window, cx);
-                                },
-                            )),
-                        ),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.cancel_provider_removal(window, cx);
+                        })),
+                    )
+                    .child(
+                        ui::dialog_button(
+                            "confirm-provider-removal",
+                            text("confirm_remove"),
+                            ButtonVariant::Danger,
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let confirmed = this.provider_removal.take();
+                            this.provider_dialog_focus.focus(window, cx);
+                            if confirmed.as_deref() == Some(this.data.draft.id.as_str()) {
+                                this.perform("remove", window, cx);
+                            }
+                            cx.notify();
+                        })),
+                    ),
+            );
+        let cancel =
+            cx.listener(|this, _: &bool, window, cx| this.cancel_provider_removal(window, cx));
+        ui::alert_dialog(&self.provider_removal_focus, cx)
+            .on_ok(|_, _, _| false)
+            .popup(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().id("provider-removal-surface").occlude().child(popup)),
+            )
+            .request_close(move |confirmed, window, cx| cancel(&confirmed, window, cx))
+    }
+
+    #[allow(clippy::too_many_lines)] // Modal header, scrollable form and fixed actions.
+    pub(super) fn provider_dialog(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let editing = !self.data.draft.preset.is_empty();
+        let family = provider_x_providers::presets()
+            .into_iter()
+            .find(|p| p.id == self.data.draft.preset);
+        let title = family.as_ref().map_or_else(
+            || text("add_provider"),
+            |family| {
+                format!(
+                    "{} · {}",
+                    text(if self.data.draft.id.is_empty() {
+                        "new_connection"
+                    } else {
+                        "edit_connection"
+                    }),
+                    family.name
+                )
+            },
+        );
+        let blocked = self.data.busy || self.data.settings_pending;
+        let header = row()
+            .child(div().flex_1().child(ui::dialog_title(title, cx)))
+            .when(editing && self.data.draft.id.is_empty(), |header| {
+                header.child(
+                    ui::button(
+                        "choose-provider",
+                        text("choose_provider"),
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .disabled(blocked)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.host.clear_draft();
+                        this.refresh(window, cx);
+                        this.model_editor = None;
+                        this.provider_scroll.set_offset(Point::default());
+                        this.provider_dialog_focus.focus(window, cx);
+                    })),
+                )
+            })
+            .child(
+                ui::button("close-provider-dialog", "", ButtonVariant::Secondary, cx)
+                    .size(px(28.))
+                    .p_0()
+                    .accessibility_label(text("close_dialog"))
+                    .disabled(blocked)
+                    .child(ui::icon(ui::IconName::Close).size(px(16.)))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.close_provider_dialog(window, cx)),
+                    ),
+            );
+        let body = if editing {
+            self.provider_editor(window, cx)
+        } else {
+            self.provider_presets(window, cx)
+        };
+        let mut popup = ui::dialog_popup(cx)
+            .w(px(Self::provider_dialog_width(window)))
+            .h(px(
+                (f32::from(window.viewport_size().height) - 96.).min(680.)
+            ))
+            .p_0()
+            .gap_0()
+            .child(header.px_6().py_4().flex_shrink_0())
+            .child(
+                div()
+                    .id("provider-dialog-scroll")
+                    .track_scroll(&self.provider_scroll)
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_6()
+                    .pb_6()
+                    .child(body),
+            );
+        if editing {
+            let claude = family
+                .as_ref()
+                .and_then(|p| {
+                    p.connections
+                        .iter()
+                        .find(|c| c.id == self.data.draft.connection)
+                })
+                .is_some_and(|c| c.credentials == CredentialKind::ClaudeCode);
+            let mut actions = row();
+            if !self.data.draft.id.is_empty() {
+                actions = actions.child(
+                    ui::button("remove", text("remove"), ButtonVariant::Danger, cx)
+                        .track_focus(&self.provider_remove_button_focus)
+                        .disabled(blocked)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.provider_removal = Some(this.data.draft.id.clone());
+                            this.provider_removal_focus.focus(window, cx);
+                            cx.notify();
+                        })),
                 );
             }
-            content = content.child(configured);
+            actions = actions.child(div().flex_1());
+            if !claude {
+                actions = actions.child(self.action_button("test", "test", "test", cx));
+            }
+            popup = popup.child(
+                actions
+                    .child(self.action_button("save", "save", "save", cx))
+                    .px_6()
+                    .py_3()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(cx.omarchy().border),
+            );
         }
+        let close =
+            cx.listener(|this, _: &bool, window, cx| this.close_provider_dialog(window, cx));
+        ui::dialog(&self.provider_dialog_focus, cx)
+            .close_on_backdrop_press(false)
+            .on_ok(|_, _, _| false)
+            .popup(div().id("provider-dialog-surface").occlude().child(popup))
+            .request_close(move |confirmed, window, cx| close(&confirmed, window, cx))
+    }
+
+    #[allow(clippy::too_many_lines)] // Declarative provider directory layout.
+    pub(super) fn providers(&self, cx: &mut Context<Self>) -> Div {
+        let mut content = column().child(
+            row()
+                .child(heading("providers", "configured_intro", cx).flex_1())
+                .child(
+                    ui::button(
+                        "add-provider",
+                        text("add_provider"),
+                        ButtonVariant::Primary,
+                        cx,
+                    )
+                    .disabled(self.data.busy || self.data.settings_pending)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.host.clear_draft();
+                        this.refresh(window, cx);
+                        this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                        this.open_provider_dialog(window, cx);
+                    })),
+                ),
+        );
+        let theme = cx.omarchy();
+        let mut configured = column().gap_0();
+        for (index, provider) in self.data.providers.iter().enumerate() {
+            let id = provider.id.clone();
+            let status = text(if provider.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            });
+            let connection = if provider.auth_label == provider.connection_label {
+                text(provider.auth_label)
+            } else {
+                format!(
+                    "{} · {}",
+                    text(provider.auth_label),
+                    text(provider.connection_label)
+                )
+            };
+            let models = if provider.model_preview.is_empty() {
+                text("no_enabled_models")
+            } else {
+                provider.model_preview.clone()
+            };
+            let model_count = format!(
+                "{} / {}",
+                provider.enabled_model_count, provider.model_count
+            );
+            let status_color = if provider.enabled {
+                theme.accent
+            } else {
+                theme.secondary.opacity(0.65)
+            };
+            if index > 0 {
+                configured = configured.child(ui::separator(cx));
+            }
+            configured = configured.child(
+                ui::button(
+                    SharedString::from(format!("open-{id}")),
+                    "",
+                    ButtonVariant::Secondary,
+                    cx,
+                )
+                .accessibility_label(format!(
+                    "{} · {id} · {connection} · {} {model_count} · {status}",
+                    provider.name,
+                    text("enabled_models")
+                ))
+                .w_full()
+                .min_h(px(64.))
+                .px_2()
+                .py_2()
+                .gap_4()
+                .hover(|style| style.bg(theme.hover_fill()))
+                .disabled(self.data.busy || self.data.settings_pending)
+                .child(
+                    column()
+                        .gap_1()
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(
+                            row()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .truncate()
+                                        .child(provider.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .text_size(px(11.))
+                                        .line_height(px(14.))
+                                        .bg(theme.normal_fill())
+                                        .text_color(theme.secondary)
+                                        .child(connection),
+                                ),
+                        )
+                        .child(
+                            muted(format!("{id} · {models}"), cx)
+                                .text_xs()
+                                .text_color(theme.foreground.opacity(0.65))
+                                .truncate(),
+                        ),
+                )
+                .child(
+                    column()
+                        .gap_1()
+                        .w(px(96.))
+                        .flex_shrink_0()
+                        .items_end()
+                        .child(div().text_sm().child(model_count))
+                        .child(
+                            muted(text("enabled_models"), cx)
+                                .text_size(px(11.))
+                                .whitespace_nowrap(),
+                        ),
+                )
+                .child(
+                    row()
+                        .gap_2()
+                        .w(px(68.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(status_color)
+                        .child(div().size(px(6.)).rounded_full().bg(status_color))
+                        .child(status),
+                )
+                .child(
+                    ui::icon(ui::IconName::ChevronRight)
+                        .size(px(16.))
+                        .text_color(theme.secondary)
+                        .flex_shrink_0(),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if let Err(error) = this.host.open(&id, &this.services) {
+                        this.host.set_message(error.to_string());
+                        this.refresh(window, cx);
+                        return;
+                    }
+                    this.refresh(window, cx);
+                    this.open_provider_dialog(window, cx);
+                })),
+            );
+        }
+        content = content.child(configured);
+        if self.data.providers.is_empty() {
+            content = content.child(
+                column()
+                    .gap_2()
+                    .py_12()
+                    .items_center()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(text("no_connections")),
+                    )
+                    .child(muted(text("add_provider_hint"), cx)),
+            );
+        }
+        content
+    }
+
+    fn provider_presets(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let mut content = column().child(muted(text("intro"), cx));
         content = content.child(
             row()
                 .child(div().flex_1().child(text("add_connection")))
@@ -88,7 +435,7 @@ impl Settings {
                     .accessibility_label(family.name)
                     .disabled(self.data.busy)
                     .w(px(
-                        ((f32::from(window.viewport_size().width) - 300.) / 3.).floor()
+                        ((Self::provider_dialog_width(window) - 76.) / 3.).floor()
                     ))
                     .min_h(px(82.))
                     .justify_start()
@@ -123,32 +470,7 @@ impl Settings {
         let Some(connection) = family.connections.iter().find(|c| c.id == d.connection) else {
             return column();
         };
-        let back = ui::button("back", text("back"), ButtonVariant::Outline, cx)
-            .disabled(self.data.busy)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.data.draft.preset.clear();
-                this.edit();
-                this.model_editor = None;
-                this.scroll.set_offset(Point::default());
-                cx.notify();
-            }));
-        let mut content =
-            column()
-                .child(row().child(back).child(muted(
-                    text(if d.id.is_empty() {
-                        "new_connection"
-                    } else {
-                        "edit_connection"
-                    }),
-                    cx,
-                )))
-                .child(div().text_xl().font_weight(FontWeight::BOLD).child(
-                    if family.id == "custom" {
-                        text("custom")
-                    } else {
-                        family.name.to_owned()
-                    },
-                ));
+        let mut content = column();
         let mut account =
             ui::panel(text("connection_group"), cx).child(self.field("name", "name", window, cx));
         if family.connections.len() > 1 {
@@ -271,9 +593,6 @@ impl Settings {
                 }
             }
             content = content.child(panel);
-        }
-        if !d.id.is_empty() {
-            content = content.child(self.action_button("remove", "remove", "remove", cx));
         }
         content
     }

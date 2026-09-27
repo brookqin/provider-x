@@ -10,9 +10,9 @@ use gpui_kit::base::{
     input::{InputEvent, InputState},
 };
 use gpui_kit::{
-    AnyElement, App, AppContext, ClickEvent, Div, Entity, Focusable, FontWeight, Point,
-    ScrollHandle, SharedString, Subscription, Task, Window, WindowAppearance, div, prelude::*, px,
-    rems,
+    AnyElement, App, AppContext, ClickEvent, Div, Entity, FocusHandle, Focusable, FontWeight,
+    Point, ScrollHandle, SharedString, Subscription, Task, Window, WindowAppearance, div,
+    prelude::*, px, rems,
 };
 use gpui_omarchy::{self as ui, ActiveTheme, ButtonVariant, ChoiceItem, ChoiceState};
 use provider_x_core::{MetadataSource, ProtocolId};
@@ -102,6 +102,14 @@ pub(crate) struct Settings {
     model_page: usize,
     advanced: bool,
     scroll: ScrollHandle,
+    provider_scroll: ScrollHandle,
+    provider_dialog_open: bool,
+    provider_commit_pending: bool,
+    provider_removal: Option<String>,
+    provider_removal_focus: FocusHandle,
+    provider_remove_button_focus: FocusHandle,
+    provider_dialog_focus: FocusHandle,
+    provider_return_focus: Option<FocusHandle>,
     _refresh: Task<()>,
 }
 
@@ -154,6 +162,11 @@ impl Settings {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.host.dismiss_message();
                         this.refresh(window, cx);
+                        if this.provider_removal.is_some() {
+                            this.provider_removal_focus.focus(window, cx);
+                        } else if this.provider_dialog_open {
+                            this.provider_dialog_focus.focus(window, cx);
+                        }
                     })),
             );
         }
@@ -216,6 +229,14 @@ impl Settings {
             model_page: 0,
             advanced: false,
             scroll: ScrollHandle::new(),
+            provider_scroll: ScrollHandle::new(),
+            provider_dialog_open: false,
+            provider_commit_pending: false,
+            provider_removal: None,
+            provider_removal_focus: cx.focus_handle(),
+            provider_remove_button_focus: cx.focus_handle(),
+            provider_dialog_focus: cx.focus_handle(),
+            provider_return_focus: None,
             _refresh: refresh,
         };
         view.restore_fields(window, cx);
@@ -272,11 +293,25 @@ impl Settings {
         if locale_changed || selection_changed || draft_changed || busy_changed {
             self.restore_choices(window, cx);
         }
+        if !self.data.busy && self.provider_commit_pending {
+            self.provider_commit_pending = false;
+            if !self.data.failed {
+                self.close_provider_dialog(window, cx);
+            }
+        }
         cx.notify();
     }
 
     fn perform(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.provider_dialog_open
+            && !self.data.busy
+            && !self.data.settings_pending
+            && matches!(action, "save" | "remove")
+        {
+            self.provider_commit_pending = true;
+        }
         if let Err(error) = self.host.action(action, &self.services, cx) {
+            self.provider_commit_pending = false;
             self.host.set_message(error.to_string());
         }
         self.refresh(window, cx);
@@ -298,7 +333,7 @@ impl Settings {
         self.model_editor = None;
         self.restore_fields(window, cx);
         self.restore_choices(window, cx);
-        self.scroll.set_offset(Point::default());
+        self.provider_scroll.set_offset(Point::default());
         cx.notify();
     }
     fn field_state(
@@ -747,11 +782,11 @@ impl Render for Settings {
             );
         }
         let body = match self.page {
-            Page::Providers => self.providers(window, cx),
+            Page::Providers => self.providers(cx),
             Page::Integration => self.integration(cx),
             Page::General => self.general(window, cx),
         };
-        let mut main = column()
+        let main = column()
             .gap_0()
             .h_full()
             .flex_1()
@@ -768,30 +803,6 @@ impl Render for Settings {
                     .pb_7()
                     .child(body),
             );
-        let editing = self.page == Page::Providers && !self.data.draft.preset.is_empty();
-        if editing {
-            let mut footer = column()
-                .gap_2()
-                .px_8()
-                .py_3()
-                .border_t_1()
-                .border_color(theme.border);
-            let claude = provider_x_providers::presets()
-                .iter()
-                .find(|p| p.id == self.data.draft.preset)
-                .and_then(|p| {
-                    p.connections
-                        .iter()
-                        .find(|c| c.id == self.data.draft.connection)
-                })
-                .is_some_and(|c| c.credentials == CredentialKind::ClaudeCode);
-            let mut actions = row().child(muted(text("save_hint"), cx).flex_1());
-            if !claude {
-                actions = actions.child(self.action_button("test", "test", "test", cx));
-            }
-            footer = footer.child(actions.child(self.action_button("save", "save", "save", cx)));
-            main = main.child(footer);
-        }
         ui::focus_scope("settings")
             .relative()
             .size_full()
@@ -807,8 +818,15 @@ impl Render for Settings {
                     .child(nav)
                     .child(main),
             )
+            .when(self.provider_dialog_open, |root| {
+                if self.provider_removal.is_some() {
+                    root.child(self.provider_removal_dialog(cx))
+                } else {
+                    root.child(self.provider_dialog(window, cx))
+                }
+            })
             .when(self.data.busy || !self.data.message.is_empty(), |root| {
-                root.child(self.notification(cx))
+                root.child(gpui_kit::deferred(self.notification(cx)).with_priority(30))
             })
     }
 }

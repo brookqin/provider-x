@@ -137,6 +137,16 @@ pub(crate) struct SettingsState(Arc<Mutex<Session>>);
 impl Global for SettingsState {}
 
 impl SettingsState {
+    pub(crate) fn clear_draft(&self) {
+        if let Ok(mut session) = self.0.lock()
+            && !session.busy
+        {
+            session.draft = ProviderDraft::default();
+            session.credential = None;
+            session.revision += 1;
+        }
+    }
+
     pub(crate) fn dismiss_message(&self) {
         if let Ok(mut session) = self.0.lock() {
             session.message.clear();
@@ -187,6 +197,53 @@ pub(crate) struct ProviderSummary {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    pub auth_label: &'static str,
+    pub connection_label: &'static str,
+    pub model_count: usize,
+    pub enabled_model_count: usize,
+    pub model_preview: String,
+}
+
+impl From<&ProviderConfig> for ProviderSummary {
+    fn from(provider: &ProviderConfig) -> Self {
+        let auth_label = match provider.auth {
+            AuthConfig::Bearer { .. } => "api",
+            AuthConfig::OpenAiOAuth { .. } | AuthConfig::ClaudeCode => "subscription",
+            AuthConfig::None => "local",
+        };
+        let connection_label = provider_x_providers::presets()
+            .iter()
+            .find(|preset| preset.id == provider.preset)
+            .and_then(|preset| {
+                preset
+                    .connections
+                    .iter()
+                    .find(|c| c.id == provider.connection)
+            })
+            .map_or(auth_label, |connection| connection.label);
+        let enabled_model_count = provider.models.iter().filter(|model| model.enabled).count();
+        let mut model_preview = provider
+            .models
+            .iter()
+            .filter(|model| model.enabled)
+            .take(2)
+            .map(|model| model.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        if enabled_model_count > 2 {
+            model_preview.push_str(" …");
+        }
+        Self {
+            id: provider.id.to_string(),
+            name: provider.name.clone(),
+            enabled: provider.enabled,
+            auth_label,
+            connection_label,
+            model_count: provider.models.len(),
+            enabled_model_count,
+            model_preview,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -222,11 +279,7 @@ impl SettingsState {
                 .providers()
                 .providers
                 .iter()
-                .map(|p| ProviderSummary {
-                    id: p.id.to_string(),
-                    name: p.name.clone(),
-                    enabled: p.enabled,
-                })
+                .map(ProviderSummary::from)
                 .collect(),
             draft: session.draft.clone(),
             has_credential: session
@@ -960,6 +1013,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn closing_provider_editor_discards_draft_and_credentials_but_keeps_feedback() {
+        let state = SettingsState::default();
+        {
+            let mut session = state.0.lock().unwrap();
+            session.draft.preset = "openai".into();
+            session.credential = Some(AuthConfig::Bearer {
+                api_key: "synthetic-test-key".into(),
+            });
+            session.message = "validation failed".into();
+            session.busy = true;
+        }
+        state.clear_draft();
+        assert!(state.0.lock().unwrap().credential.is_some());
+        state.0.lock().unwrap().busy = false;
+        state.clear_draft();
+        let session = state.0.lock().unwrap();
+        assert!(session.draft.preset.is_empty());
+        assert!(session.credential.is_none());
+        assert_eq!(session.message, "validation failed");
+        assert_eq!(session.revision, 1);
+    }
+
+    #[test]
     fn preference_changes_coalesce_without_blocking_the_form() {
         let mut session = Session::default();
         assert!(session.enqueue_setting(SettingKind::Dock, "dock-hide"));
@@ -1127,6 +1203,34 @@ mod tests {
                 assert_eq!(provider.models[0].context_window, None);
             }
         }
+    }
+
+    #[test]
+    fn provider_summary_counts_selections_and_bounds_preview_even_when_connection_is_disabled() {
+        let mut input = draft("ollama", "local");
+        input.models = (0..4)
+            .map(|index| ModelDraft {
+                id: format!("model-{index}"),
+                name: format!("Model {index}"),
+                enabled: index != 0,
+                ..ModelDraft::default()
+            })
+            .collect();
+        let mut provider = compile_instance(input, None, &[]).unwrap();
+        provider.enabled = false;
+        let summary = ProviderSummary::from(&provider);
+        assert!(!summary.enabled);
+        assert_eq!(summary.model_count, 4);
+        assert_eq!(summary.enabled_model_count, 3);
+        assert_eq!(summary.model_preview, "Model 1 · Model 2 …");
+        assert_eq!(summary.auth_label, "local");
+        for model in &mut provider.models {
+            model.enabled = false;
+        }
+        let summary = ProviderSummary::from(&provider);
+        assert_eq!(summary.model_count, 4);
+        assert_eq!(summary.enabled_model_count, 0);
+        assert!(summary.model_preview.is_empty());
     }
 
     #[test]
