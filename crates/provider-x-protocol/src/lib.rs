@@ -1,3 +1,9 @@
+pub mod anthropic_messages;
+pub mod chat_completions;
+mod model_list;
+pub mod output;
+pub mod responses;
+
 use bytes::Bytes;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -3,9 +3,9 @@ use std::{collections::BTreeSet, fmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{CoreError, ProtocolId, ProviderId, ProviderKind};
+use crate::{CoreError, ProtocolId, ProviderId, ProviderModelSpec};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListenerConfig {
@@ -49,6 +49,8 @@ pub enum AnthropicThinkingMode {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AuthConfig {
+    None,
+    ClaudeCode,
     Bearer {
         api_key: String,
     },
@@ -68,6 +70,8 @@ pub enum AuthConfig {
 impl fmt::Debug for AuthConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::None => formatter.write_str("None"),
+            Self::ClaudeCode => formatter.write_str("ClaudeCode"),
             Self::Bearer { .. } => formatter
                 .debug_struct("Bearer")
                 .field("api_key", &"[REDACTED]")
@@ -87,6 +91,8 @@ impl AuthConfig {
     #[must_use]
     pub fn mode_name(&self) -> &'static str {
         match self {
+            Self::None => "none",
+            Self::ClaudeCode => "claude_code",
             Self::Bearer { .. } => "bearer",
             Self::OpenAiOAuth { .. } => "openai_oauth",
         }
@@ -95,6 +101,7 @@ impl AuthConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         match self {
+            Self::None | Self::ClaudeCode => false,
             Self::Bearer { api_key } => api_key.is_empty(),
             Self::OpenAiOAuth {
                 access_token,
@@ -111,7 +118,7 @@ impl AuthConfig {
             Self::OpenAiOAuth {
                 expires_at_unix, ..
             } => Some(*expires_at_unix),
-            Self::Bearer { .. } => None,
+            Self::None | Self::ClaudeCode | Self::Bearer { .. } => None,
         }
     }
 }
@@ -122,14 +129,26 @@ pub struct TransportConfig {
     pub websocket: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningPolicy {
+    #[default]
+    Native,
+    DeepSeek,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: ProviderId,
     pub name: String,
     pub description: Option<String>,
     pub enabled: bool,
-    pub kind: ProviderKind,
+    pub preset: String,
+    pub connection: String,
+    pub models: Vec<ProviderModelSpec>,
     pub protocol: ProtocolId,
+    #[serde(default)]
+    pub reasoning_policy: ReasoningPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_thinking: Option<AnthropicThinkingMode>,
     pub endpoints: EndpointConfig,
@@ -149,11 +168,14 @@ impl ProviderConfig {
     ///
     /// Returns an error when a required credential/endpoint is missing or malformed.
     pub fn validate(&self) -> Result<(), CoreError> {
+        self.validate_models()?;
         if self.auth.is_empty() {
             return Err(match &self.auth {
-                AuthConfig::Bearer { .. } => CoreError::EmptyApiKey {
-                    provider_id: self.id.to_string(),
-                },
+                AuthConfig::None | AuthConfig::ClaudeCode | AuthConfig::Bearer { .. } => {
+                    CoreError::EmptyApiKey {
+                        provider_id: self.id.to_string(),
+                    }
+                }
                 AuthConfig::OpenAiOAuth { .. } => CoreError::IncompleteOAuthCredentials {
                     provider_id: self.id.to_string(),
                 },
@@ -167,7 +189,7 @@ impl ProviderConfig {
                     provider_id: self.id.to_string(),
                 });
             }
-            AuthConfig::Bearer { .. } => {}
+            AuthConfig::None | AuthConfig::ClaudeCode | AuthConfig::Bearer { .. } => {}
             AuthConfig::OpenAiOAuth {
                 access_token,
                 refresh_token,
@@ -194,7 +216,9 @@ impl ProviderConfig {
                 }
             }
         }
-        if !is_absolute_http_url(&self.endpoints.http) {
+        if !matches!(self.auth, AuthConfig::ClaudeCode)
+            && !is_absolute_http_url(&self.endpoints.http)
+        {
             return Err(CoreError::InvalidHttpEndpoint {
                 provider_id: self.id.to_string(),
             });
@@ -234,6 +258,26 @@ impl ProviderConfig {
                     ProtocolId::OpenaiResponses => unreachable!(),
                 },
             });
+        }
+        Ok(())
+    }
+
+    fn validate_models(&self) -> Result<(), CoreError> {
+        let mut ids = BTreeSet::new();
+        for model in &self.models {
+            if !ids.insert(&model.upstream_model_id) {
+                return Err(CoreError::DuplicateModel {
+                    provider_id: self.id.to_string(),
+                    model_id: model.upstream_model_id.to_string(),
+                });
+            }
+            let expected = crate::CatalogModelId::for_provider(&self.id, &model.upstream_model_id);
+            if model.catalog_model_id != expected {
+                return Err(CoreError::CatalogModelIdMismatch {
+                    expected: expected.to_string(),
+                    actual: model.catalog_model_id.to_string(),
+                });
+            }
         }
         Ok(())
     }
@@ -278,16 +322,22 @@ impl ProvidersDocument {
     ///
     /// # Errors
     ///
-    /// Version-one documents are upgraded in memory by assigning an explicit provider kind. A
-    /// version-two document must always state its kind, so `custom` is never confused with an
-    /// absent legacy field.
+    /// Only the current schema is accepted. Older documents must be configured again.
     ///
     /// Returns an error for invalid YAML or a configuration that violates the current schema.
     pub fn from_yaml(yaml: &str) -> Result<Self, CoreError> {
-        let mut value: yaml_serde::Value = yaml_serde::from_str(yaml)
+        let value: yaml_serde::Value = yaml_serde::from_str(yaml)
             .map_err(|error| CoreError::InvalidYaml(error.to_string()))?;
-        if schema_version(&value) == Some(1) {
-            migrate_v1_document(&mut value)?;
+        let version = value
+            .as_mapping()
+            .and_then(|value| value.get("schema_version"))
+            .and_then(yaml_serde::Value::as_u64)
+            .unwrap_or(0);
+        if version != u64::from(SCHEMA_VERSION) {
+            return Err(CoreError::UnsupportedSchemaVersion {
+                actual: u32::try_from(version).unwrap_or(u32::MAX),
+                expected: SCHEMA_VERSION,
+            });
         }
         let document: Self = yaml_serde::from_value(value)
             .map_err(|error| CoreError::InvalidYaml(error.to_string()))?;
@@ -340,98 +390,21 @@ impl ProvidersDocument {
     }
 }
 
-fn schema_version(value: &yaml_serde::Value) -> Option<u64> {
-    value.as_mapping()?.get("schema_version")?.as_u64()
-}
-
-fn migrate_v1_document(value: &mut yaml_serde::Value) -> Result<(), CoreError> {
-    let document = value
-        .as_mapping_mut()
-        .ok_or_else(|| CoreError::InvalidYaml("provider document must be a mapping".to_owned()))?;
-    document.insert(
-        yaml_serde::Value::String("schema_version".to_owned()),
-        yaml_serde::Value::Number(SCHEMA_VERSION.into()),
-    );
-    let providers = document
-        .get_mut("providers")
-        .and_then(yaml_serde::Value::as_sequence_mut)
-        .ok_or_else(|| CoreError::InvalidYaml("providers must be a sequence".to_owned()))?;
-    for provider in providers {
-        let mapping = provider
-            .as_mapping_mut()
-            .ok_or_else(|| CoreError::InvalidYaml("provider must be a mapping".to_owned()))?;
-        let is_legacy_deepseek = mapping.get("id").and_then(yaml_serde::Value::as_str)
-            == Some("deepseek")
-            && mapping.get("protocol").and_then(yaml_serde::Value::as_str)
-                == Some("openai_responses")
-            && mapping
-                .get("endpoints")
-                .and_then(yaml_serde::Value::as_mapping)
-                .and_then(|endpoints| endpoints.get("http"))
-                .and_then(yaml_serde::Value::as_str)
-                .is_some_and(|endpoint| {
-                    endpoint.trim_end_matches('/') == "https://api.deepseek.com"
-                })
-            && mapping
-                .get("endpoints")
-                .and_then(yaml_serde::Value::as_mapping)
-                .and_then(|endpoints| endpoints.get("websocket"))
-                .is_none_or(yaml_serde::Value::is_null)
-            && mapping
-                .get("endpoints")
-                .and_then(yaml_serde::Value::as_mapping)
-                .and_then(|endpoints| endpoints.get("models"))
-                .is_none_or(|models| {
-                    models.is_null() || models.as_str() == Some("https://api.deepseek.com/models")
-                })
-            && mapping
-                .get("transports")
-                .and_then(yaml_serde::Value::as_mapping)
-                .is_some_and(|transports| {
-                    transports
-                        .get("http_sse")
-                        .and_then(yaml_serde::Value::as_bool)
-                        == Some(true)
-                        && transports
-                            .get("websocket")
-                            .and_then(yaml_serde::Value::as_bool)
-                            == Some(false)
-                });
-        if is_legacy_deepseek
-            && let Some(endpoints) = mapping
-                .get_mut("endpoints")
-                .and_then(yaml_serde::Value::as_mapping_mut)
-        {
-            endpoints.insert(
-                yaml_serde::Value::String("models".to_owned()),
-                yaml_serde::Value::String("https://api.deepseek.com/models".to_owned()),
-            );
-        }
-        mapping.insert(
-            yaml_serde::Value::String("kind".to_owned()),
-            yaml_serde::Value::String(
-                if is_legacy_deepseek {
-                    "deepseek"
-                } else {
-                    "custom"
-                }
-                .to_owned(),
-            ),
-        );
-    }
-    Ok(())
-}
-
 fn is_absolute_http_url(value: &str) -> bool {
-    let Some((scheme, remainder)) = value.split_once("://") else {
-        return false;
-    };
-    matches!(scheme, "http" | "https") && !remainder.is_empty() && !remainder.starts_with('/')
+    valid_url(value, &["http", "https"])
 }
 
 fn is_absolute_websocket_url(value: &str) -> bool {
-    let Some((scheme, remainder)) = value.split_once("://") else {
-        return false;
-    };
-    matches!(scheme, "ws" | "wss") && !remainder.is_empty() && !remainder.starts_with('/')
+    valid_url(value, &["ws", "wss"])
+}
+
+fn valid_url(value: &str, schemes: &[&str]) -> bool {
+    !value.chars().any(char::is_whitespace)
+        && url::Url::parse(value).is_ok_and(|url| {
+            schemes.contains(&url.scheme())
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+        })
 }

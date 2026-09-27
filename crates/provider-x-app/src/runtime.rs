@@ -6,7 +6,7 @@ use std::{
 };
 
 use chrono::{SecondsFormat, Utc};
-use gpui::Global;
+use gpui_kit::Global;
 use provider_x_catalog::{ManualDiscoveryClient, RefreshPreview};
 use provider_x_core::{ProviderConfig, ProviderId, ProviderModelCache};
 use provider_x_egress::{EgressObserver, EgressServer, EgressState, IngressCapability};
@@ -43,6 +43,7 @@ pub(crate) struct ProviderMutationOutcome {
 
 #[derive(Clone)]
 pub(crate) struct AppServices {
+    pub(crate) upgrade_notice: Option<crate::storage::provider_upgrade::UpgradeNotice>,
     pub(crate) egress: Arc<EgressHandle>,
     runtime: Arc<Runtime>,
     pub(crate) control: Arc<Mutex<ControlPlane>>,
@@ -84,8 +85,10 @@ impl OpenAiOAuthRuntime {
         self: &Arc<Self>,
         mut provider: ProviderConfig,
     ) -> Result<ProviderConfig, String> {
-        if !matches!(provider.kind, provider_x_core::ProviderKind::OpenAiOAuth)
-            || !needs_refresh(&provider.auth, unix_timestamp())
+        if !matches!(
+            provider.auth,
+            provider_x_core::AuthConfig::OpenAiOAuth { .. }
+        ) || !needs_refresh(&provider.auth, unix_timestamp())
         {
             return Ok(provider);
         }
@@ -166,8 +169,10 @@ impl OpenAiOAuthRuntime {
                 .providers
                 .iter()
                 .filter(|provider| {
-                    provider.kind == provider_x_core::ProviderKind::OpenAiOAuth
-                        && needs_refresh(&provider.auth, unix_timestamp())
+                    matches!(
+                        provider.auth,
+                        provider_x_core::AuthConfig::OpenAiOAuth { .. }
+                    ) && needs_refresh(&provider.auth, unix_timestamp())
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -193,7 +198,9 @@ impl OpenAiOAuthRuntime {
 fn oauth_account_id(auth: &provider_x_core::AuthConfig) -> Option<&str> {
     match auth {
         provider_x_core::AuthConfig::OpenAiOAuth { account_id, .. } => Some(account_id),
-        provider_x_core::AuthConfig::Bearer { .. } => None,
+        provider_x_core::AuthConfig::None
+        | provider_x_core::AuthConfig::ClaudeCode
+        | provider_x_core::AuthConfig::Bearer { .. } => None,
     }
 }
 
@@ -225,15 +232,14 @@ impl AppServices {
     }
 
     pub(crate) fn new_with_listener_port(listener_port: Option<u16>) -> anyhow::Result<Self> {
-        let home = PathBuf::from(
-            std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?,
-        );
+        let home = data_home()?;
         let paths = AppPaths::for_home(home.clone());
         let single_instance = Arc::new(SingleInstanceGuard::acquire_with_timeout(
             paths.root.join("provider-x.lock"),
             STARTUP_HANDOFF_WAIT,
         )?);
         let runtime_log = RuntimeLog::start(&paths.logs)?;
+        let upgrade_notice = crate::storage::provider_upgrade::prepare(&paths)?;
         let control = ControlPlane::load(&paths)?;
         let model_registry = ModelRegistryStore::new(&paths.model_registry);
         let codex_config =
@@ -308,6 +314,7 @@ impl AppServices {
         let control = Arc::new(Mutex::new(control));
         let openai_oauth = build_openai_oauth_runtime(&control, &egress, &runtime_log)?;
         let services = Self {
+            upgrade_notice,
             egress,
             runtime,
             control,
@@ -324,6 +331,13 @@ impl AppServices {
         }
         services.start_openai_oauth_refresh_loop();
         Ok(services)
+    }
+
+    pub(crate) fn spawn_cancellable<F>(&self, future: F) -> tokio::task::AbortHandle
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.runtime.spawn(future).abort_handle()
     }
 
     pub(crate) fn spawn<F, T>(&self, future: F) -> oneshot::Receiver<T>
@@ -394,6 +408,7 @@ impl AppServices {
         provider: ProviderConfig,
         existing: Option<ProviderModelCache>,
         timestamp: String,
+        enrich: bool,
     ) -> Result<ManualRefreshOutcome, String> {
         let provider = self
             .openai_oauth
@@ -403,7 +418,12 @@ impl AppServices {
             .refresh_preview(&provider, existing.as_ref(), timestamp.clone())
             .await
             .map_err(|error| error.to_string())?;
-        if preview.needs_review.is_empty() {
+        if !enrich
+            || preview.added.is_empty()
+            || provider_x_providers::resolve_provider(&provider)
+                .models_dev_id()
+                .is_none()
+        {
             return Ok(ManualRefreshOutcome {
                 provider,
                 preview,
@@ -585,15 +605,14 @@ impl AppServices {
             .lock()
             .map_err(|_| rust_i18n::t!("app.internal.egress_task_lock").to_string())?
             .take();
-        if let Some(mut task) = task {
-            if tokio::time::timeout(self.egress.shutdown_wait, &mut task)
+        if let Some(mut task) = task
+            && tokio::time::timeout(self.egress.shutdown_wait, &mut task)
                 .await
                 .is_err()
-            {
-                task.abort();
-                let _ = task.await;
-                return Err(rust_i18n::t!("app.internal.egress_shutdown_timeout").to_string());
-            }
+        {
+            task.abort();
+            let _ = task.await;
+            return Err(rust_i18n::t!("app.internal.egress_shutdown_timeout").to_string());
         }
         self.egress_ready()
     }
@@ -652,6 +671,18 @@ fn capability_from_base_url(base_url: &str) -> Option<IngressCapability> {
 
 fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// Development runs use a separate application and Codex home without changing HOME.
+pub(crate) fn data_home() -> anyhow::Result<PathBuf> {
+    if (cfg!(debug_assertions) || std::env::args().any(|arg| arg.starts_with("--smoke-")))
+        && let Some(home) = std::env::var_os("PROVIDER_X_TEST_HOME")
+    {
+        return Ok(PathBuf::from(home));
+    }
+    Ok(PathBuf::from(
+        std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?,
+    ))
 }
 
 #[cfg(test)]

@@ -22,8 +22,8 @@ use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
 use provider_x_core::{
     AuthConfig, CatalogModelId, CodexConfig, EndpointConfig, ListenerConfig, ModelCacheDocument,
-    ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache,
-    ProviderModelSource, ProviderModelSpec, ProvidersDocument, TimeoutConfig, TransportConfig,
+    ModelId, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache, ProviderModelSource,
+    ProviderModelSpec, ProvidersDocument, TimeoutConfig, TransportConfig,
 };
 use provider_x_egress::{
     EgressEvent, EgressObserver, EgressServer, EgressState, IngressCapability,
@@ -339,9 +339,12 @@ fn probe_config(args: &ProbeArgs, mock_provider: Option<SocketAddr>) -> Provider
                 name: format!("M0 {provider_id}"),
                 description: Some("strict local contract fixture".to_owned()),
                 enabled: true,
-                kind: provider_x_core::ProviderKind::Custom,
+                preset: "custom".to_owned(),
+                connection: "api".to_owned(),
+                models: Vec::new(),
                 protocol: ProtocolId::OpenaiResponses,
                 anthropic_thinking: None,
+                reasoning_policy: provider_x_core::ReasoningPolicy::Native,
                 endpoints: EndpointConfig {
                     http: format!("http://{address}/v1"),
                     websocket: websocket.clone(),
@@ -407,7 +410,7 @@ fn probe_cache(config: &ProvidersDocument) -> Result<ModelCacheDocument, ProbeEr
                     ),
                     upstream_model_id,
                     display_name: "Coder".to_owned(),
-                    publication_status: ModelPublicationStatus::Ready,
+                    enabled: true,
                     context_window: Some(128_000),
                     supported_reasoning_levels: vec!["low".to_owned()],
                     supports_parallel_tool_calls: Some(true),

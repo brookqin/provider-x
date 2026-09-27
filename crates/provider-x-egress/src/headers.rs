@@ -152,8 +152,7 @@ fn is_sensitive_official_header(name: &str) -> bool {
 mod tests {
     use hyper::{HeaderMap, header::HeaderValue};
     use provider_x_core::{
-        AuthConfig, EndpointConfig, ProtocolId, ProviderConfig, ProviderId, ProviderKind,
-        TransportConfig,
+        AuthConfig, EndpointConfig, ProtocolId, ProviderConfig, ProviderId, TransportConfig,
     };
     use provider_x_providers::resolve_provider;
 
@@ -168,9 +167,12 @@ mod tests {
             name: "Test".to_owned(),
             description: None,
             enabled: true,
-            kind: ProviderKind::Custom,
+            preset: "custom".to_owned(),
+            connection: "api".to_owned(),
+            models: Vec::new(),
             protocol,
             anthropic_thinking: None,
+            reasoning_policy: provider_x_core::ReasoningPolicy::Native,
             endpoints: EndpointConfig {
                 http: "https://example.com/v1".to_owned(),
                 websocket: None,

@@ -4,9 +4,6 @@ use thiserror::Error;
 
 use crate::storage::{SecureFileError, atomic_file};
 
-pub(crate) const ENGLISH_LABEL: &str = "English";
-pub(crate) const SIMPLIFIED_CHINESE_LABEL: &str = "简体中文";
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum UiLocale {
     #[default]
@@ -19,21 +16,6 @@ impl UiLocale {
         match self {
             Self::English => "en",
             Self::SimplifiedChinese => "zh-CN",
-        }
-    }
-
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::English => ENGLISH_LABEL,
-            Self::SimplifiedChinese => SIMPLIFIED_CHINESE_LABEL,
-        }
-    }
-
-    pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label {
-            ENGLISH_LABEL => Some(Self::English),
-            SIMPLIFIED_CHINESE_LABEL => Some(Self::SimplifiedChinese),
-            _ => None,
         }
     }
 
@@ -174,5 +156,40 @@ mod tests {
     fn bundled_resources_include_english_and_simplified_chinese() {
         assert_eq!(rust_i18n::t!("app.global.about", locale = "en"), "About");
         assert_eq!(rust_i18n::t!("app.global.about", locale = "zh-CN"), "关于");
+    }
+}
+
+#[cfg(test)]
+mod resource_contract_tests {
+    use serde_json::Value;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn contract(value: &Value, prefix: &str, result: &mut BTreeMap<String, BTreeSet<String>>) {
+        if let Value::Object(object) = value {
+            for (key, value) in object {
+                contract(value, &format!("{prefix}.{key}"), result);
+            }
+        } else {
+            let variables = value
+                .as_str()
+                .unwrap_or_default()
+                .split("%{")
+                .skip(1)
+                .filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned()))
+                .collect();
+            result.insert(prefix.to_owned(), variables);
+        }
+    }
+
+    #[test]
+    fn locale_keys_versions_and_interpolation_variables_match() {
+        let en: Value = yaml_serde::from_str(include_str!("../locales/en.yml")).unwrap();
+        let zh: Value = yaml_serde::from_str(include_str!("../locales/zh-CN.yml")).unwrap();
+        assert_eq!(en["_version"], zh["_version"]);
+        let mut english = BTreeMap::new();
+        let mut chinese = BTreeMap::new();
+        contract(&en, "", &mut english);
+        contract(&zh, "", &mut chinese);
+        assert_eq!(english, chinese);
     }
 }

@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use provider_x_app::control_plane::{AppPaths, ControlPlane, ControlPlaneError};
 use provider_x_catalog::RefreshPreview;
 use provider_x_core::{
-    AuthConfig, CatalogModelId, EndpointConfig, MetadataSource, ModelId, ModelPublicationStatus,
-    ProtocolId, ProviderConfig, ProviderId, ProviderModelCache, ProviderModelSource,
-    ProviderModelSpec, RouteDecision, RouteResolver, TransportConfig,
+    AuthConfig, CatalogModelId, EndpointConfig, MetadataSource, ModelId, ProtocolId,
+    ProviderConfig, ProviderId, ProviderModelCache, ProviderModelSource, ProviderModelSpec,
+    RouteDecision, RouteResolver, TransportConfig,
 };
 
 fn resolve(control: &ControlPlane, model: &str) -> RouteDecision {
@@ -20,9 +20,12 @@ fn provider() -> ProviderConfig {
         name: "Provider A".to_owned(),
         description: None,
         enabled: false,
-        kind: provider_x_core::ProviderKind::Custom,
+        preset: "custom".to_owned(),
+        connection: "api".to_owned(),
+        models: Vec::new(),
         protocol: ProtocolId::OpenaiResponses,
         anthropic_thinking: None,
+        reasoning_policy: provider_x_core::ReasoningPolicy::Native,
         endpoints: EndpointConfig {
             http: "https://gateway.example/v1".to_owned(),
             websocket: None,
@@ -54,7 +57,7 @@ fn preview(provider: &ProviderConfig) -> RefreshPreview {
                 upstream_model_id: upstream.clone(),
                 catalog_model_id: CatalogModelId::for_provider(&provider.id, &upstream),
                 display_name: "Coder".to_owned(),
-                publication_status: ModelPublicationStatus::Ready,
+                enabled: true,
                 context_window: Some(128_000),
                 supported_reasoning_levels: vec!["low".to_owned()],
                 supports_parallel_tool_calls: Some(true),
@@ -67,7 +70,6 @@ fn preview(provider: &ProviderConfig) -> RefreshPreview {
         },
         added: vec![upstream],
         removed: Vec::new(),
-        needs_review: Vec::new(),
     }
 }
 
@@ -191,9 +193,9 @@ fn provider_can_be_enabled_without_model_capability_review() {
     let mut control = ControlPlane::load(&paths).unwrap();
     let provider = provider();
     let mut incomplete = preview(&provider);
-    incomplete.cache.models[0].publication_status = ModelPublicationStatus::NeedsReview;
+    incomplete.cache.models[0].enabled = false;
     incomplete.cache.models[0].supports_search_tool = None;
-    incomplete.needs_review = incomplete.added.clone();
+    incomplete.added = incomplete.added.clone();
     control
         .commit_refresh(provider.clone(), incomplete)
         .unwrap();

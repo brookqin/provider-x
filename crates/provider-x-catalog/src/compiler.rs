@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
-use provider_x_core::{ModelCacheDocument, ModelPublicationStatus, ProvidersDocument};
-use provider_x_providers::{resolve_provider, validate_document};
+use provider_x_core::{ModelCacheDocument, ProvidersDocument};
+use provider_x_providers::validate_document;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -41,24 +41,7 @@ impl CatalogOverlay {
             .iter()
             .filter(|provider| provider.enabled)
         {
-            let provider_cache = cache.providers.get(&provider.id).ok_or_else(|| {
-                provider_x_core::CoreError::MissingModelCache {
-                    provider_id: provider.id.to_string(),
-                }
-            })?;
-            if !resolve_provider(provider)
-                .matches_cache_fingerprint(provider, &provider_cache.config_fingerprint)?
-            {
-                return Err(provider_x_core::CoreError::StaleModelCache {
-                    provider_id: provider.id.to_string(),
-                }
-                .into());
-            }
-            for model in provider_cache
-                .models
-                .iter()
-                .filter(|model| model.publication_status == ModelPublicationStatus::Ready)
-            {
+            for model in provider.models.iter().filter(|model| model.enabled) {
                 let slug = model.catalog_model_id.to_string();
                 if !slugs.insert(slug.clone()) {
                     return Err(CatalogError::InvalidCodexCatalog(format!(
@@ -254,9 +237,8 @@ mod tests {
 
     use provider_x_core::{
         AuthConfig, CatalogModelId, CodexConfig, EndpointConfig, ListenerConfig, MetadataSource,
-        ModelCacheDocument, ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig,
-        ProviderId, ProviderModelCache, ProviderModelSource, ProviderModelSpec, ProvidersDocument,
-        TimeoutConfig, TransportConfig,
+        ModelCacheDocument, ModelId, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache,
+        ProviderModelSource, ProviderModelSpec, ProvidersDocument, TimeoutConfig, TransportConfig,
     };
     use serde_json::Value;
 
@@ -264,14 +246,17 @@ mod tests {
 
     fn inputs() -> (ProvidersDocument, ModelCacheDocument) {
         let provider_id = ProviderId::new("provider-a").unwrap();
-        let provider = ProviderConfig {
+        let mut provider = ProviderConfig {
             id: provider_id.clone(),
             name: "Provider A".to_owned(),
             description: None,
             enabled: true,
-            kind: provider_x_core::ProviderKind::Custom,
+            preset: "custom".to_owned(),
+            connection: "api".to_owned(),
+            models: Vec::new(),
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
+            reasoning_policy: provider_x_core::ReasoningPolicy::Native,
             endpoints: EndpointConfig {
                 http: "https://gateway.example/v1".to_owned(),
                 websocket: None,
@@ -299,7 +284,7 @@ mod tests {
                 upstream_model_id: model_id.clone(),
                 catalog_model_id: CatalogModelId::for_provider(&provider_id, &model_id),
                 display_name: "Coder".to_owned(),
-                publication_status: ModelPublicationStatus::Ready,
+                enabled: true,
                 context_window: Some(128_000),
                 supported_reasoning_levels: vec!["low".to_owned(), "high".to_owned()],
                 supports_parallel_tool_calls: Some(true),
@@ -310,6 +295,7 @@ mod tests {
                 )]),
             }],
         };
+        provider.models = cache.models.clone();
         (
             ProvidersDocument {
                 schema_version: provider_x_core::SCHEMA_VERSION,
@@ -377,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn output_is_deterministic_and_rejects_stale_cache() {
+    fn output_is_deterministic_and_independent_of_discovery_cache() {
         let (providers, mut cache) = inputs();
         let bundled = br#"{"models":[{"slug":"official"}]}"#;
         let first = compile_catalog(bundled, &providers, &cache).unwrap();
@@ -405,7 +391,8 @@ mod tests {
             .next()
             .unwrap()
             .config_fingerprint = "sha256:stale".to_owned();
-        let stale = compile_catalog(bundled, &providers, &cache).unwrap_err();
-        assert!(stale.to_string().contains("fingerprint is stale"));
+        assert_eq!(first, compile_catalog(bundled, &providers, &cache).unwrap());
+        cache.providers.clear();
+        assert_eq!(first, compile_catalog(bundled, &providers, &cache).unwrap());
     }
 }

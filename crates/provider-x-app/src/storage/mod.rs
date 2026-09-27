@@ -2,6 +2,7 @@ pub(crate) mod atomic_file;
 mod model_cache;
 mod model_registry;
 mod provider_config;
+pub(crate) mod provider_upgrade;
 mod single_instance;
 
 pub use atomic_file::{LoadedFile, SecureFileError};

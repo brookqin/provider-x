@@ -13,13 +13,13 @@ use hyper::{
     upgrade::Upgraded,
 };
 use hyper_util::rt::TokioIo;
-use protocol_openai_responses::{
-    WebSocketMessageKind, classify_ws_text, inspect_ws_text, is_terminal_ws_event,
-    websocket_error_event,
-};
 use provider_x_core::{ProviderId, RouteDecision};
 use provider_x_network::{
     NetworkConnector, NetworkWebSocket, WebSocketConnectionError, connect_websocket,
+};
+use provider_x_protocol::responses::{
+    WebSocketMessageKind, classify_ws_text, inspect_ws_text, is_terminal_ws_event,
+    websocket_error_event,
 };
 use provider_x_providers::WebSocketPlan;
 use thiserror::Error;
@@ -775,7 +775,7 @@ async fn relay(
                 return Ok(());
             }
             Event::Upstream(Some(Ok(message))) => {
-                let terminal = message.to_text().ok().is_some_and(is_terminal_ws_event);
+                let terminal = message.to_text().is_ok_and(is_terminal_ws_event);
                 send_downstream(
                     downstream,
                     message,
@@ -821,9 +821,9 @@ async fn relay(
 }
 
 fn is_response_create_message(message: &Message) -> bool {
-    message.to_text().ok().is_some_and(|text| {
-        classify_ws_text(text).ok() == Some(WebSocketMessageKind::ResponseCreate)
-    })
+    message
+        .to_text()
+        .is_ok_and(|text| classify_ws_text(text).ok() == Some(WebSocketMessageKind::ResponseCreate))
 }
 
 async fn send_upstream(

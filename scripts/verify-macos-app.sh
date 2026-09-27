@@ -20,6 +20,9 @@ APP_VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' "$PROJECT_DIR/Cargo.toml" | 
 [[ -f "$PLIST" ]] || { print -u2 "Info.plist missing: $PLIST"; exit 1; }
 [[ -f "$LICENSE_FILE" ]] || { print -u2 "GPL license missing: $LICENSE_FILE"; exit 1; }
 [[ -f "$ICON" ]] || { print -u2 "app icon missing: $ICON"; exit 1; }
+for UI_FILE in gpui-shell.json main.js vendor/omarchy-ui/src/index.js vendor/omarchy-ui/LICENSE; do
+  [[ -f "$APP_DIR/Contents/Resources/ui/$UI_FILE" ]] || { print -u2 "offline UI resource missing: $UI_FILE"; exit 1; }
+done
 [[ -n "$APP_VERSION" ]] || { print -u2 "workspace version not found"; exit 1; }
 grep -q "GNU GENERAL PUBLIC LICENSE" "$LICENSE_FILE"
 grep -q "Version 3, 29 June 2007" "$LICENSE_FILE"

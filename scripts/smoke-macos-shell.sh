@@ -16,6 +16,10 @@ physical_footprint_mb() {
 }
 
 cleanup() {
+  local result=$?
+  if (( result != 0 )); then
+    cat "$LOG_FILE" >&2
+  fi
   if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
     kill "$APP_PID" 2>/dev/null || true
     wait "$APP_PID" 2>/dev/null || true
@@ -28,7 +32,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-HOME="$SMOKE_HOME" "$APP_DIR/Contents/MacOS/provider-x" \
+PROVIDER_X_TEST_HOME="$SMOKE_HOME" "$APP_DIR/Contents/MacOS/provider-x" \
   --smoke-lifecycle --smoke-exit-after-ms=7500 >"$LOG_FILE" 2>&1 &
 APP_PID=$!
 
@@ -57,6 +61,7 @@ for _ in {1..50}; do
   sleep 0.1
 done
 grep -q "PROVIDER_X_SMOKE settings_ui=initialized" "$LOG_FILE"
+grep -q "PROVIDER_X_SMOKE settings_script=loaded" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE settings_window=open" "$LOG_FILE"
 OPEN_UI_RSS_KB=$(ps -o rss= -p "$APP_PID" | tr -d ' ')
 OPEN_UI_FOOTPRINT_MB=$(physical_footprint_mb "$APP_PID")
@@ -69,7 +74,7 @@ ERROR_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "http://$EGRESS_ADDRESS/not-an-api-path")
 [[ "$ERROR_STATUS" == "404" ]]
 
-if HOME="$SMOKE_HOME" "$APP_DIR/Contents/MacOS/provider-x" \
+if PROVIDER_X_TEST_HOME="$SMOKE_HOME" "$APP_DIR/Contents/MacOS/provider-x" \
   --smoke-lock-only >"$SECOND_LOG" 2>&1; then
   print -u2 "second provider-x instance unexpectedly started"
   exit 1
@@ -111,12 +116,18 @@ RELEASED_UI_FOOTPRINT_MB=$(physical_footprint_mb "$APP_PID")
 (( OPEN_UI_FOOTPRINT_MB - RELEASED_UI_FOOTPRINT_MB >= 20 ))
 wait "$APP_PID"
 APP_PID=""
+if curl --silent --max-time 1 --output /dev/null "http://$EGRESS_ADDRESS/not-an-api-path"; then
+  print -u2 "egress listener remains reachable after shutdown"
+  exit 1
+fi
 grep -q "PROVIDER_X_SMOKE lifecycle=quit" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE lifecycle=window_hidden_pending_release" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE lifecycle=window_reopened_before_release" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE settings_window=released" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE lifecycle=window_closed_process_alive" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE lifecycle=window_reopened" "$LOG_FILE"
+
+"$SCRIPT_DIR/verify-macos-app.sh" "$APP_DIR" >&2
 
 EXECUTABLE_BYTES=$(stat -f %z "$APP_DIR/Contents/MacOS/provider-x")
 print "shell smoke passed"

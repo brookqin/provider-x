@@ -1,6 +1,6 @@
-use protocol_anthropic_messages::AnthropicMessagesWsHttpAdapter;
-use protocol_openai_chat_completions::ChatCompletionsWsHttpAdapter;
-use protocol_openai_responses::ResponsesWsHttpAdapter;
+use provider_x_protocol::anthropic_messages::AnthropicMessagesWsHttpAdapter;
+use provider_x_protocol::chat_completions::ChatCompletionsWsHttpAdapter;
+use provider_x_protocol::responses::ResponsesWsHttpAdapter;
 use provider_x_providers::WsHttpAdapterKind;
 use tokio::sync::watch;
 
@@ -50,19 +50,24 @@ pub(crate) async fn run(
             .await
         }
         WsHttpAdapterKind::OpenaiChatCompletions => {
-            crate::ws_http_runner::run::<ChatCompletionsWsHttpAdapter>(
+            crate::ws_http_runner::run_with_adapter::<ChatCompletionsWsHttpAdapter>(
                 downstream,
                 WsHttpSessionContext {
                     provider,
                     runtime,
                     request_headers,
                     first_text,
-                    upstream_model,
+                    upstream_model: upstream_model.clone(),
                     observed_route,
                     codex_turn_metadata_header_present,
                     session_id,
                     state,
                 },
+                ChatCompletionsWsHttpAdapter::new_session_with_policy(
+                    upstream_model,
+                    state.request_body_limit_bytes,
+                    provider.profile.reasoning_policy(),
+                ),
                 shutdown,
             )
             .await

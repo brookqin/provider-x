@@ -10,12 +10,8 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 
 - **保护 ChatGPT 个性化设置。** 作者的 ChatGPT 个性化设置曾被重置，因此 ProviderX 只修改 Codex 集成所必需的受管配置，保留无关设置、检测外部变更，并保存可用于恢复的回执。
 - **避免引入另一套庞大运行时。** ProviderX 不会额外安装或内嵌 Chromium、浏览器、Bun 或 Node.js。
-- **降低资源消耗。** 对一个小型设置应用而言，内嵌浏览器加 H5 界面过于沉重，因此 ProviderX 使用 GPUI 实现原生设置窗口，并作为原生 macOS 菜单栏应用运行。
+- **降低资源消耗。** 对一个小型设置应用而言，内嵌浏览器加 H5 界面过于沉重，因此 ProviderX 使用 GPUI Kit、GPUI Shell 和 Omarchy UI 实现原生设置窗口，并作为原生 macOS 菜单栏应用运行。
 - **保持功能聚焦。** ProviderX 不打算成为全功能 AI Gateway；它只希望保留主力 GPT 的原生能力，同时补充少量高性价比的第三方模型。
-
-## 界面预览
-
-<p align="center"><img src="docs/settings-cn.png" alt="ProviderX 简体中文全局设置" width="48%">&nbsp;<img src="docs/providers-cn.png" alt="ProviderX 简体中文供应商设置" width="48%"></p>
 
 ## 功能特性
 
@@ -32,7 +28,6 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 
 ### 计划中
 
-- 增加 GLM、KIMI、MiniMax 等供应商模板。
 - 完整支持第三方模型的 subagent 调度，包括可读的任务详情传递和后续消息通信。
 
 ## 工作原理
@@ -77,7 +72,7 @@ ProviderX 收到的只有密文，无法为第三方供应商解密或转换。�
 ## 环境要求
 
 - Apple Silicon Mac（`arm64`）
-- Rust 1.85 或更高版本及 Cargo
+- Rust 1.89 或更高版本及 Cargo
 - Xcode Command Line Tools，包括 `codesign`、`iconutil`、`lipo` 和 `plutil`
 - 所配置第三方供应商的访问凭据
 
@@ -101,19 +96,27 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 
 ## 配置供应商
 
-1. 启动 ProviderX，从菜单栏项目中选择 **打开设置**。
-2. 选择 **新增供应商**。
-3. 选择供应商模板或 **自定义**。专用模板需要填写名称，并使用其固定的凭据方式（API Key 或浏览器账号登录）；自定义供应商还需选择上游协议并填写 HTTP 地址及可选 WebSocket 地址。
-4. 刷新模型列表，并按需检查模型名称及可选能力元数据。
-5. 保存并启用供应商。
-6. 打开 **全局设置**，启用 **Codex / ChatGPT Desktop 集成**。
-7. 完整退出并重新启动 ChatGPT Desktop，然后选择类似 `provider-id/model-id` 的命名空间模型。
+1. 从菜单栏打开设置，在供应商页选择厂家。
+2. 选择 API、订阅或地区连接方式，填写名称及所需凭据。本地服务无需密钥。
+3. 获取模型列表或手动输入模型 ID，启用需要使用的模型。能力元数据可选，不需要审核或先通过测试。
+4. 保存配置。高级设置可修改 API 连接的协议、HTTP、模型发现和 WebSocket 地址。
+5. 在 **应用集成** 中启用 Codex / ChatGPT Desktop 集成。
+6. 完整退出并重新启动 ChatGPT Desktop，选择 `provider-id/model-id` 模型。
 
-专用厂商模板内置推荐协议、官方端点、模型发现方式以及对应的 models.dev 厂商 ID，不提供
-协议和端点选择。需要使用其他兼容协议或非标准端点时，请创建自定义供应商。
+预设包括 OpenAI、Anthropic、DeepSeek、Kimi、Qwen、Z.ai、MiniMax、xAI、OpenRouter、
+OpenCode Zen/Go、Ollama、LM Studio 和自定义连接。预设只提供创建时的默认值；保存后的实例持有自己的地址与协议。
+本次是破坏性升级，供应商配置使用 schema 3。不兼容的供应商配置和模型缓存会先自动备份，再以空白供应商配置启动；提示显示备份目录，点击后进入供应商设置。Codex 接入记录保持不动，不转换或继续运行旧格式。
 
-自定义 Anthropic 供应商默认使用 `anthropic_thinking: adaptive`，以兼容当前 Claude 模型；
-实现旧式手动扩展思考的兼容接口可以在供应商文档中明确设置为 `enabled`。
+OpenAI 的 API 与 ChatGPT 订阅位于同一厂家入口；订阅采用浏览器 OAuth 登录并直接访问对应 HTTP/WebSocket 后端。
+Anthropic 的 API Key 使用 Messages API；订阅使用用户已安装并登录的本地 Claude Code 程序。
+ProviderX 不安装 Claude Code，不读取其凭据，也不会回退为直接请求 Claude 订阅 HTTP 接口。
+“检查本地安装”只检查程序文件是否存在，不代表登录或推理成功。
+
+Claude Code 桥接目前每次请求启动一个隔离进程，将调用方历史作为输入上下文；不复用 CLI 会话或承诺原生提示缓存命中。
+调用方工具通过本机 MCP 描述并交回调用方执行，禁用 CLI 内置工具。此路径仅通过模拟程序验证，真实订阅联调尚未完成。当前支持文本与调用方工具，图片和文档块会被明确拒绝。
+可选连接测试只验证模型发现接口，不代表所有模型或推理能力已验证。
+
+Anthropic 默认使用 `anthropic_thinking: adaptive`；需要旧式扩展思考的接口可明确配置为 `enabled`。
 
 停用集成时，只要 ProviderX 管理的配置值没有被外部修改，它就会恢复启用集成前的 Codex 设置。请保持 ProviderX 运行至现有任务结束，然后再重启 ChatGPT Desktop。
 
@@ -147,11 +150,16 @@ ProviderX 是 Egress Router，不是凭据保险库。请妥善保护 macOS 账�
 
 本项目是使用 Rust 2024 的 Cargo Workspace。Crate 边界、架构约束、安全要求和按变更范围选择验证方式的说明见 [AGENTS.md](AGENTS.md)。
 
+UI 开发使用 `./scripts/dev-ui.sh`，它启动隔离临时数据目录中的真实应用。修改
+`crates/provider-x-app/ui/main.js` 或其导入组件会热重载；草稿和业务操作保留在 Rust 宿主中。
+开发目录中的生成类型声明不进入 Git。发布包内置相同脚本和固定版本的 Omarchy UI，无需启动时下载依赖。
+
 基础检查：
 
 ```sh
 cargo fmt --all -- --check
 cargo test --workspace
+node --experimental-vm-modules --test crates/provider-x-app/ui/tests/state.test.mjs
 cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
 ```
@@ -161,6 +169,7 @@ Apple Silicon macOS App Bundle 与生命周期检查：
 ```sh
 ./scripts/build-macos-app.sh
 ./scripts/smoke-macos-shell.sh
+./scripts/smoke-offline-ui.sh
 ```
 
 真实供应商及真实 Codex/ChatGPT Desktop 探针必须显式启用。测试证据不得记录 Authorization Header、Cookie、OAuth Token、账户 ID、Attestation 数据、完整请求体或未经脱敏的本地配置。

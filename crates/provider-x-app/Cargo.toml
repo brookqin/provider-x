@@ -9,18 +9,14 @@ license.workspace = true
 name = "provider-x"
 path = "src/main.rs"
 
-[features]
-default = []
-gpui-runtime-shaders = ["gpui_platform/runtime_shaders"]
-
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
 fs2.workspace = true
 getrandom.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
-gpui_platform.workspace = true
+gpui-kit.workspace = true
+gpui-shell.workspace = true
+tracing-subscriber.workspace = true
 hex.workspace = true
 provider-x-core = { path = "../provider-x-core" }
 provider-x-catalog = { path = "../provider-x-catalog" }
@@ -38,7 +34,7 @@ yaml_serde.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSButton", "NSControl", "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3", features = ["NSAlert", "NSApplication", "NSButton", "NSControl", "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSString"] }
 png.workspace = true
 smappservice-rs = "0.1.3"

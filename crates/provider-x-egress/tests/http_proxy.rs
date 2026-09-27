@@ -8,16 +8,16 @@ use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::{TokioExecutor, TokioIo},
 };
-use protocol_openai_responses::is_terminal_ws_event;
 use provider_x_core::{
     AuthConfig, CatalogModelId, CodexConfig, EndpointConfig, ListenerConfig, ModelCacheDocument,
-    ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache,
-    ProviderModelSource, ProviderModelSpec, ProvidersDocument, TimeoutConfig, TransportConfig,
+    ModelId, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache, ProviderModelSource,
+    ProviderModelSpec, ProvidersDocument, TimeoutConfig, TransportConfig,
 };
 use provider_x_egress::{
     EgressEvent, EgressObserver, EgressServer, EgressState, IngressCapability, ObservedRoute,
     ObservedTransport, ObservedWebSocketDirection, ObservedWebSocketReason, ObservedWebSocketStage,
 };
+use provider_x_protocol::responses::is_terminal_ws_event;
 use serde_json::Value;
 use tokio::{
     net::TcpListener,
@@ -74,7 +74,7 @@ impl CollectingObserver {
 }
 
 fn providers(provider: Option<ProviderConfig>, body_limit: u64) -> ProvidersDocument {
-    ProvidersDocument {
+    let mut document = ProvidersDocument {
         schema_version: provider_x_core::SCHEMA_VERSION,
         listener: ListenerConfig {
             host: "127.0.0.1".to_owned(),
@@ -94,7 +94,12 @@ fn providers(provider: Option<ProviderConfig>, body_limit: u64) -> ProvidersDocu
             manage_user_config: true,
         },
         providers: provider.into_iter().collect(),
+    };
+    let cache = catalog_cache(&document);
+    for provider in &mut document.providers {
+        provider.models = cache.providers[&provider.id].models.clone();
     }
+    document
 }
 
 fn provider(upstream: SocketAddr) -> ProviderConfig {
@@ -103,9 +108,12 @@ fn provider(upstream: SocketAddr) -> ProviderConfig {
         name: "Provider A".to_owned(),
         description: None,
         enabled: true,
-        kind: provider_x_core::ProviderKind::Custom,
+        preset: "custom".to_owned(),
+        connection: "api".to_owned(),
+        models: Vec::new(),
         protocol: ProtocolId::OpenaiResponses,
         anthropic_thinking: None,
+        reasoning_policy: provider_x_core::ReasoningPolicy::Native,
         endpoints: EndpointConfig {
             http: format!("http://{upstream}/v1"),
             websocket: None,
@@ -289,7 +297,7 @@ fn catalog_cache(providers: &ProvidersDocument) -> ModelCacheDocument {
                             ),
                             upstream_model_id: upstream_model_id.clone(),
                             display_name: "Coder".to_owned(),
-                            publication_status: ModelPublicationStatus::Ready,
+                            enabled: true,
                             context_window: Some(128_000),
                             supported_reasoning_levels: vec!["low".to_owned()],
                             supports_parallel_tool_calls: Some(true),
@@ -2201,9 +2209,12 @@ async fn live_deepseek_responses_provider_contract() {
         name: "DeepSeek Responses live contract".to_owned(),
         description: None,
         enabled: true,
-        kind: provider_x_core::ProviderKind::DeepSeek,
+        preset: "deepseek".to_owned(),
+        connection: "api".to_owned(),
+        models: Vec::new(),
         protocol: ProtocolId::OpenaiResponses,
         anthropic_thinking: None,
+        reasoning_policy: provider_x_core::ReasoningPolicy::Native,
         endpoints: EndpointConfig {
             http: "https://api.deepseek.com".to_owned(),
             websocket: None,
@@ -2232,7 +2243,7 @@ async fn live_deepseek_responses_provider_contract() {
                     upstream_model_id: model_id.clone(),
                     catalog_model_id: CatalogModelId::for_provider(&provider_id, &model_id),
                     display_name: "DeepSeek V4 Flash".to_owned(),
-                    publication_status: ModelPublicationStatus::Ready,
+                    enabled: true,
                     context_window: Some(128_000),
                     supported_reasoning_levels: vec!["high".to_owned(), "max".to_owned()],
                     supports_parallel_tool_calls: Some(true),
@@ -2286,9 +2297,12 @@ async fn live_deepseek_v4_pro_chat_completions_tool_contract() {
         name: "DeepSeek live contract".to_owned(),
         description: None,
         enabled: true,
-        kind: provider_x_core::ProviderKind::Custom,
+        preset: "custom".to_owned(),
+        connection: "api".to_owned(),
+        models: Vec::new(),
         protocol: ProtocolId::OpenaiChatCompletions,
         anthropic_thinking: None,
+        reasoning_policy: provider_x_core::ReasoningPolicy::Native,
         endpoints: EndpointConfig {
             http: "https://api.deepseek.com".to_owned(),
             websocket: None,
@@ -2317,7 +2331,7 @@ async fn live_deepseek_v4_pro_chat_completions_tool_contract() {
                     upstream_model_id: model_id.clone(),
                     catalog_model_id: CatalogModelId::for_provider(&provider_id, &model_id),
                     display_name: "DeepSeek V4 Pro".to_owned(),
-                    publication_status: ModelPublicationStatus::Ready,
+                    enabled: true,
                     context_window: Some(1_000_000),
                     supported_reasoning_levels: vec!["high".to_owned(), "max".to_owned()],
                     supports_parallel_tool_calls: Some(false),
@@ -2429,9 +2443,12 @@ async fn live_deepseek_v4_pro_anthropic_messages_tool_contract() {
         name: "DeepSeek Anthropic live contract".to_owned(),
         description: None,
         enabled: true,
-        kind: provider_x_core::ProviderKind::Custom,
+        preset: "custom".to_owned(),
+        connection: "api".to_owned(),
+        models: Vec::new(),
         protocol: ProtocolId::AnthropicMessages,
         anthropic_thinking: Some(provider_x_core::AnthropicThinkingMode::Enabled),
+        reasoning_policy: provider_x_core::ReasoningPolicy::Native,
         endpoints: EndpointConfig {
             http: "https://api.deepseek.com/anthropic".to_owned(),
             websocket: None,
@@ -2460,7 +2477,7 @@ async fn live_deepseek_v4_pro_anthropic_messages_tool_contract() {
                     upstream_model_id: model_id.clone(),
                     catalog_model_id: CatalogModelId::for_provider(&provider_id, &model_id),
                     display_name: "DeepSeek V4 Pro".to_owned(),
-                    publication_status: ModelPublicationStatus::Ready,
+                    enabled: true,
                     context_window: Some(1_000_000),
                     supported_reasoning_levels: vec!["high".to_owned(), "max".to_owned()],
                     supports_parallel_tool_calls: Some(false),

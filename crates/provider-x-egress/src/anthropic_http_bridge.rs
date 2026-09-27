@@ -6,9 +6,9 @@ use std::{
 };
 
 use bytes::Bytes;
-use hyper::body::{Body, Frame, Incoming};
+use hyper::body::{Body, Frame};
 use pin_project_lite::pin_project;
-use protocol_anthropic_messages::AnthropicSseDecoder;
+use provider_x_protocol::anthropic_messages::AnthropicSseDecoder;
 use tokio::time::{Instant, Sleep};
 
 use crate::timeouts::BoxError;
@@ -16,7 +16,7 @@ use crate::timeouts::BoxError;
 pin_project! {
     pub(crate) struct AnthropicMessageBody {
         #[pin]
-        inner: Incoming,
+        inner: crate::server::ProxyBody,
         #[pin]
         sleep: Sleep,
         timeout: Duration,
@@ -27,7 +27,11 @@ pin_project! {
 }
 
 impl AnthropicMessageBody {
-    pub(crate) fn new(inner: Incoming, decoder: AnthropicSseDecoder, timeout: Duration) -> Self {
+    pub(crate) fn new(
+        inner: crate::server::ProxyBody,
+        decoder: AnthropicSseDecoder,
+        timeout: Duration,
+    ) -> Self {
         Self {
             inner,
             sleep: tokio::time::sleep(timeout),
@@ -74,7 +78,7 @@ impl Body for AnthropicMessageBody {
                     }
                 }
                 Poll::Ready(Some(Err(error))) => {
-                    return Poll::Ready(Some(Err(Box::new(error))));
+                    return Poll::Ready(Some(Err(error)));
                 }
                 Poll::Ready(None) => {
                     let events = match this.decoder.finish() {

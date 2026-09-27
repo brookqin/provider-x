@@ -17,3 +17,7 @@ mod runtime;
 #[cfg(target_os = "macos")]
 mod runtime_log;
 pub mod storage;
+#[cfg(target_os = "macos")]
+mod ui_host;
+#[cfg(target_os = "macos")]
+mod ui_preferences;

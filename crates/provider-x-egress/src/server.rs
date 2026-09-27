@@ -12,8 +12,8 @@ use hyper::{
     Method, Request, Response, StatusCode, Uri, body::Incoming, header, service::service_fn,
 };
 use hyper_util::rt::TokioIo;
-use protocol_openai_responses::{ResponsesPath, http_error_body, inspect_http};
 use provider_x_core::RouteDecision;
+use provider_x_protocol::responses::{ResponsesPath, http_error_body, inspect_http};
 use provider_x_providers::{HttpResponseAdapter, HttpTarget};
 use tokio::{
     net::TcpListener,
@@ -457,6 +457,37 @@ async fn proxy(
                     state.request_body_limit_bytes,
                 )
                 .map_err(|error| ProxyError::InvalidRequest(error.to_string()))?;
+            if provider.profile.execution_backend()
+                == provider_x_providers::ExecutionBackend::ClaudeCode
+            {
+                let HttpResponseAdapter::AnthropicMessages(tool_names) = prepared.response_adapter
+                else {
+                    return Err(ProxyError::ProviderNotAvailable);
+                };
+                let timeout = Duration::from_millis(state.stream_idle_timeout_ms);
+                let stream = provider_x_providers::claude_code::start(
+                    &prepared.body,
+                    state.request_body_limit_bytes,
+                    timeout,
+                )
+                .await
+                .map_err(|_| ProxyError::ProviderNotAvailable)?;
+                let decoder =
+                    provider_x_protocol::anthropic_messages::AnthropicSseDecoder::with_tool_names(
+                        state.request_body_limit_bytes,
+                        tool_names,
+                    );
+                let body = stream.map_err(|error| Box::new(error) as BoxError).boxed();
+                let mut response = Response::new(
+                    crate::anthropic_http_bridge::AnthropicMessageBody::new(body, decoder, timeout)
+                        .boxed(),
+                );
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_static("text/event-stream"),
+                );
+                return Ok(response);
+            }
             (
                 prepared.target,
                 prepared.response_adapter,
@@ -501,19 +532,24 @@ async fn proxy(
         !matches!(&response_adapter, HttpResponseAdapter::Passthrough) && parts.status.is_success();
     let downstream_body = match response_adapter {
         HttpResponseAdapter::OpenaiChatCompletions(tool_names) if parts.status.is_success() => {
-            let decoder = protocol_openai_chat_completions::ChatSseDecoder::with_tool_names(
+            let decoder = provider_x_protocol::chat_completions::ChatSseDecoder::with_tool_names(
                 state.request_body_limit_bytes,
                 tool_names,
             );
             crate::chat_http_bridge::ChatCompletionBody::new(body, decoder, stream_timeout).boxed()
         }
         HttpResponseAdapter::AnthropicMessages(tool_names) if parts.status.is_success() => {
-            let decoder = protocol_anthropic_messages::AnthropicSseDecoder::with_tool_names(
-                state.request_body_limit_bytes,
-                tool_names,
-            );
-            crate::anthropic_http_bridge::AnthropicMessageBody::new(body, decoder, stream_timeout)
-                .boxed()
+            let decoder =
+                provider_x_protocol::anthropic_messages::AnthropicSseDecoder::with_tool_names(
+                    state.request_body_limit_bytes,
+                    tool_names,
+                );
+            crate::anthropic_http_bridge::AnthropicMessageBody::new(
+                body.map_err(|error| Box::new(error) as BoxError).boxed(),
+                decoder,
+                stream_timeout,
+            )
+            .boxed()
         }
         HttpResponseAdapter::Passthrough
         | HttpResponseAdapter::OpenaiChatCompletions(_)
