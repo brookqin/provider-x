@@ -97,6 +97,17 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
   ./scripts/build-macos-app.sh
 ```
 
+如需将已验证的应用打包为拖拽安装 DMG，安装
+[`create-dmg`](https://github.com/create-dmg/create-dmg) 后运行：
+
+```sh
+brew install create-dmg
+./scripts/create-macos-dmg.sh
+```
+
+镜像包含 `ProviderX.app` 和 Applications 快捷方式，输出到
+`target/macos/ProviderX-<version>-arm64.dmg`。Release workflow 使用同一脚本，并发布 DMG 及其 SHA-256 校验和。
+
 ## 配置供应商
 
 1. 从菜单栏打开设置，在供应商页选择厂家。

@@ -11,13 +11,14 @@ use gpui_kit::base::{
 };
 use gpui_kit::{
     AnyElement, App, AppContext, ClickEvent, Div, Entity, FocusHandle, Focusable, FontWeight,
-    Point, ScrollHandle, SharedString, Subscription, Task, Window, WindowAppearance, div,
-    prelude::*, px, rems,
+    Image, ImageFormat, Point, ScrollHandle, SharedString, Subscription, Task, Window,
+    WindowAppearance, div, img, prelude::*, px, rems, rgb,
 };
 use gpui_omarchy::{self as ui, ActiveTheme, ButtonVariant, ChoiceItem, ChoiceState};
 use provider_x_core::{MetadataSource, ProtocolId};
 use provider_x_providers::CredentialKind;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn text(key: &str) -> String {
@@ -90,6 +91,8 @@ pub(crate) struct Settings {
     host: SettingsState,
     services: AppServices,
     data: SettingsSnapshot,
+    brand_mark_light: Arc<Image>,
+    brand_mark_dark: Arc<Image>,
     page: Page,
     fields: BTreeMap<&'static str, Entity<InputState>>,
     choices: BTreeMap<&'static str, Entity<ChoiceState>>,
@@ -217,6 +220,14 @@ impl Settings {
             host,
             services,
             data,
+            brand_mark_light: Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                include_bytes!("../resources/app-icon/settings-light.png").to_vec(),
+            )),
+            brand_mark_dark: Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                include_bytes!("../resources/app-icon/settings-dark.png").to_vec(),
+            )),
             page: Page::Providers,
             fields: BTreeMap::new(),
             choices: BTreeMap::new(),
@@ -703,7 +714,33 @@ impl Settings {
                         cx,
                     )),
             )
-            .child(muted(text("general_hint"), cx))
+            .child(Self::about(cx))
+    }
+    fn about(cx: &App) -> Div {
+        ui::panel(text("about"), cx)
+            .child(
+                row()
+                    .justify_between()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("ProviderX"))
+                    .child(muted(
+                        rust_i18n::t!("settings.app_version", version = env!("CARGO_PKG_VERSION"))
+                            .to_string(),
+                        cx,
+                    )),
+            )
+            .child(muted(text("about_description"), cx))
+            .child(
+                row().child(
+                    ui::button(
+                        "project-home",
+                        text("project_home"),
+                        ButtonVariant::Outline,
+                        cx,
+                    )
+                    .child(ui::icon(ui::IconName::ExternalLink).size(px(14.)))
+                    .on_click(|_, _, cx| cx.open_url("https://github.com/brookqin/provider-x")),
+                ),
+            )
     }
     fn integration(&self, cx: &mut Context<Self>) -> Div {
         let control = ui::switch("integration", "", self.data.integration == "active", cx)
@@ -740,37 +777,66 @@ impl Settings {
     }
 }
 
-impl Render for Settings {
-    #[allow(clippy::too_many_lines)] // Window composition and action footer.
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.omarchy().clone();
-        let mut nav = column()
-            .w(px(206.))
-            .h_full()
+impl Settings {
+    fn brand_header(&self, window: &Window) -> Div {
+        let dark = uses_dark_theme(self.data.theme, window.appearance());
+        let mark = if dark {
+            &self.brand_mark_dark
+        } else {
+            &self.brand_mark_light
+        };
+        row()
+            .gap(px(8.))
+            .h(px(36.))
+            .px(px(8.))
             .flex_shrink_0()
-            .pt(px(54.))
-            .px_4()
-            .pb_5()
-            .border_r_1()
-            .border_color(theme.border)
+            .child(img(Arc::clone(mark)).size(px(32.)).flex_shrink_0())
             .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::BOLD)
-                    .child("ProviderX"),
+                row()
+                    .gap_0()
+                    .font_family("Helvetica Neue")
+                    .text_size(px(18.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(if dark { 0x00f5_f5f5 } else { 0x0016_1616 }))
+                    .child("Provider")
+                    .child(div().font_weight(FontWeight::BOLD).italic().child("X")),
             )
-            .child(muted(text("settings"), cx).mb_4());
-        for (page, key) in [
-            (Page::Providers, "providers"),
-            (Page::Integration, "integration"),
-            (Page::General, "general"),
+    }
+
+    fn sidebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let theme = cx.omarchy().clone();
+        let mut items = column().gap(rems(0.125));
+        for (page, key, icon) in [
+            (Page::Providers, "providers", ui::IconName::Network),
+            (
+                Page::Integration,
+                "integration",
+                ui::IconName::LayoutDashboard,
+            ),
+            (Page::General, "general", ui::IconName::Settings2),
         ] {
-            nav = nav.child(
-                ui::button(key, text(key), ButtonVariant::Secondary, cx)
-                    .selected(self.page == page)
-                    .h(px(40.))
-                    .w_full()
+            let selected = self.page == page;
+            let label = text(key);
+            items = items.child(
+                ui::button(key, "", ButtonVariant::Secondary, cx)
+                    .accessibility_label(label.clone())
+                    .selected(selected)
                     .justify_start()
+                    .gap(px(8.))
+                    .h(rems(2.))
+                    .w_full()
+                    .px(rems(0.5))
+                    .styles(|styles| {
+                        styles.selected(|style| {
+                            style
+                                .bg(theme.hover_fill())
+                                .text_color(theme.accent)
+                                .font_weight(FontWeight::NORMAL)
+                        })
+                    })
+                    .child(ui::icon(icon).size(px(14.)))
+                    .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.page = page;
                         this.scroll.set_offset(Point::default());
@@ -781,6 +847,39 @@ impl Render for Settings {
                     })),
             );
         }
+        column()
+            .gap_0()
+            .w(rems(12.25))
+            .h_full()
+            .flex_shrink_0()
+            .pt(px(52.))
+            .px(rems(0.5))
+            .pb_5()
+            .bg(theme.background)
+            .border_r_1()
+            .border_color(theme.divider())
+            .child(self.brand_header(window))
+            .child(
+                div()
+                    .mt(rems(1.25))
+                    .mb(rems(0.125))
+                    .py(rems(0.375))
+                    .px(rems(0.5))
+                    .text_size(rems(0.625))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.secondary)
+                    .child(text("settings")),
+            )
+            .child(items)
+    }
+}
+
+impl Render for Settings {
+    #[allow(clippy::too_many_lines)] // Window composition and action footer.
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.omarchy().clone();
+        let nav = self.sidebar(window, cx);
         let body = match self.page {
             Page::Providers => self.providers(cx),
             Page::Integration => self.integration(cx),

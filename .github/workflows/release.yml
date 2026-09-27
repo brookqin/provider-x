@@ -41,7 +41,10 @@ jobs:
           RUSTUP_TOOLCHAIN: 1.97.1
         run: ./scripts/build-macos-app.sh
 
-      - name: Create DMG and checksum
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG with create-dmg and checksum
         id: package
         shell: bash
         run: |

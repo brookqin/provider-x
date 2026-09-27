@@ -21,6 +21,10 @@ fi
   print -u2 "run scripts/build-macos-app.sh first"
   exit 1
 }
+command -v create-dmg >/dev/null 2>&1 || {
+  print -u2 "create-dmg not found; install it with: brew install create-dmg"
+  exit 1
+}
 
 "$SCRIPT_DIR/verify-macos-app.sh" "$APP_DIR" >&2
 
@@ -35,18 +39,22 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ditto "$APP_DIR" "$STAGING_DIR/ProviderX.app"
-ln -s /Applications "$STAGING_DIR/Applications"
 
 case "$DMG_PATH" in
   "$TARGET_DIR"/ProviderX-*-arm64.dmg) rm -f -- "$DMG_PATH" ;;
   *) print -u2 "refusing to overwrite unexpected DMG path: $DMG_PATH"; exit 1 ;;
 esac
 
-hdiutil create \
-  -volname "ProviderX $APP_VERSION" \
-  -srcfolder "$STAGING_DIR" \
-  -format UDZO \
-  -ov \
-  "$DMG_PATH" >&2
+create-dmg \
+  --volname "ProviderX $APP_VERSION" \
+  --volicon "$APP_DIR/Contents/Resources/AppIcon.icns" \
+  --window-pos 200 120 \
+  --window-size 600 400 \
+  --icon-size 100 \
+  --icon "ProviderX.app" 150 185 \
+  --hide-extension "ProviderX.app" \
+  --app-drop-link 450 185 \
+  --format UDZO \
+  "$DMG_PATH" "$STAGING_DIR" >&2
 
 print "$DMG_PATH"

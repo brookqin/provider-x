@@ -134,6 +134,18 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
   ./scripts/build-macos-app.sh
 ```
 
+To package the verified app into a drag-to-install DMG, install
+[`create-dmg`](https://github.com/create-dmg/create-dmg) and run:
+
+```sh
+brew install create-dmg
+./scripts/create-macos-dmg.sh
+```
+
+The image contains `ProviderX.app` and an Applications shortcut, and is written to
+`target/macos/ProviderX-<version>-arm64.dmg`. The release workflow uses the same script and
+publishes the DMG with its SHA-256 checksum.
+
 ## Configure a Provider
 
 1. Open settings from the menu bar and choose a provider family.
