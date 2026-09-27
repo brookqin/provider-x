@@ -25,8 +25,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Install Rust 1.89
-        run: rustup toolchain install 1.89.0 --profile minimal --no-self-update
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --no-self-update
 
       - name: Run workspace tests
-        run: cargo +1.89.0 test --workspace --locked
+        run: cargo +1.97.1 test --workspace --locked

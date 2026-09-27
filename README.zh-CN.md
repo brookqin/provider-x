@@ -75,7 +75,7 @@ ProviderX 收到的只有密文，无法为第三方供应商解密或转换。�
 ## 环境要求
 
 - Apple Silicon Mac（`arm64`）
-- Rust 1.89 或更高版本及 Cargo
+- Rust 1.97.1 或更高版本及 Cargo
 - Xcode Command Line Tools，包括 `codesign`、`iconutil`、`lipo` 和 `plutil`
 - 所配置第三方供应商的访问凭据
 
