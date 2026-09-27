@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::PathBuf};
 
 use thiserror::Error;
 
@@ -7,6 +7,7 @@ use crate::storage::{SecureFileError, atomic_file};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum UiLocale {
     #[default]
+    System,
     English,
     SimplifiedChinese,
 }
@@ -14,6 +15,7 @@ pub(crate) enum UiLocale {
 impl UiLocale {
     pub(crate) const fn code(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::English => "en",
             Self::SimplifiedChinese => "zh-CN",
         }
@@ -21,7 +23,13 @@ impl UiLocale {
 
     pub(crate) fn from_identifier(identifier: &str) -> Self {
         let normalized = identifier.trim().replace('_', "-").to_ascii_lowercase();
-        if normalized == "zh" || normalized.starts_with("zh-") {
+        if normalized == "system" {
+            Self::System
+        } else if normalized == "zh"
+            || normalized.starts_with("zh-hans")
+            || normalized.starts_with("zh-cn")
+            || normalized.starts_with("zh-sg")
+        {
             Self::SimplifiedChinese
         } else {
             Self::English
@@ -29,14 +37,9 @@ impl UiLocale {
     }
 
     pub(crate) fn system_default() -> Self {
-        if cfg!(target_os = "macos")
-            && let Ok(output) = Command::new("/usr/bin/defaults")
-                .args(["read", "-g", "AppleLocale"])
-                .output()
-            && output.status.success()
-            && let Ok(value) = String::from_utf8(output.stdout)
-        {
-            return Self::from_identifier(&value);
+        #[cfg(target_os = "macos")]
+        if let Some(language) = objc2_foundation::NSLocale::preferredLanguages().firstObject() {
+            return Self::from_identifier(&language.to_string());
         }
         for variable in ["LC_ALL", "LC_MESSAGES", "LANG"] {
             if let Ok(value) = std::env::var(variable)
@@ -49,7 +52,12 @@ impl UiLocale {
     }
 
     pub(crate) fn activate(self) {
-        rust_i18n::set_locale(self.code());
+        let resolved = if self == Self::System {
+            Self::system_default()
+        } else {
+            self
+        };
+        rust_i18n::set_locale(resolved.code());
     }
 }
 
@@ -77,6 +85,7 @@ impl UiLocaleStore {
         let loaded = atomic_file::load(&self.path)?;
         let value = std::str::from_utf8(&loaded.bytes)?.trim();
         match value {
+            "system" => Ok(Some(UiLocale::System)),
             "en" => Ok(Some(UiLocale::English)),
             "zh-CN" => Ok(Some(UiLocale::SimplifiedChinese)),
             _ => Err(UiLocaleError::Unsupported(value.to_owned())),
@@ -137,6 +146,9 @@ mod tests {
             UiLocale::SimplifiedChinese
         );
         assert_eq!(UiLocale::from_identifier("en_US.UTF-8"), UiLocale::English);
+        assert_eq!(UiLocale::from_identifier("fr-FR"), UiLocale::English);
+        assert_eq!(UiLocale::from_identifier("zh-Hant-TW"), UiLocale::English);
+        assert_eq!(UiLocale::from_identifier("system"), UiLocale::System);
     }
 
     #[test]
@@ -150,6 +162,8 @@ mod tests {
 
         store.save(UiLocale::English).unwrap();
         assert_eq!(store.load().unwrap(), Some(UiLocale::English));
+        store.save(UiLocale::System).unwrap();
+        assert_eq!(store.load().unwrap(), Some(UiLocale::System));
     }
 
     #[test]

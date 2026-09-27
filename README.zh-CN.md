@@ -10,7 +10,7 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 
 - **保护 ChatGPT 个性化设置。** 作者的 ChatGPT 个性化设置曾被重置，因此 ProviderX 只修改 Codex 集成所必需的受管配置，保留无关设置、检测外部变更，并保存可用于恢复的回执。
 - **避免引入另一套庞大运行时。** ProviderX 不会额外安装或内嵌 Chromium、浏览器、Bun 或 Node.js。
-- **降低资源消耗。** 对一个小型设置应用而言，内嵌浏览器加 H5 界面过于沉重，因此 ProviderX 使用 GPUI Kit、GPUI Shell 和 Omarchy UI 实现原生设置窗口，并作为原生 macOS 菜单栏应用运行。
+- **降低资源消耗。** 对一个小型设置应用而言，内嵌浏览器加 H5 界面过于沉重，因此 ProviderX 使用 GPUI Kit 和 gpui-omarchy 实现原生设置窗口，并作为原生 macOS 菜单栏应用运行。
 - **保持功能聚焦。** ProviderX 不打算成为全功能 AI Gateway；它只希望保留主力 GPT 的原生能力，同时补充少量高性价比的第三方模型。
 
 ## 功能特性
@@ -24,6 +24,7 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 - 由用户主动刷新供应商模型，并将专用厂商实现映射到 [models.dev](https://models.dev/) 的厂商 ID，以精确匹配结果补充缺失元数据。
 - 通过原生 GPUI 设置窗口管理供应商、模型可见性与能力、Codex 集成、开机运行、Dock 图标以及英文或简体中文界面。
 - 可选择显示 Dock 图标，点击图标重新打开设置；隐藏图标时设置窗口保持打开，关闭窗口后路由服务继续运行。
+- 设置按功能分组，开关使用 Switch，选项使用 Select，推理级别支持多选。外观可跟随系统；语言支持自动识别系统语言，无法匹配时回退英文。透明标题栏与窗口内容融为一体。
 - 上游连接支持 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
 - 将脱敏后的请求路由、上游响应与运行错误写入按天轮换的本机私有日志，并只保留 10 天。
 
@@ -151,16 +152,15 @@ ProviderX 是 Egress Router，不是凭据保险库。请妥善保护 macOS 账�
 
 本项目是使用 Rust 2024 的 Cargo Workspace。Crate 边界、架构约束、安全要求和按变更范围选择验证方式的说明见 [AGENTS.md](AGENTS.md)。
 
-UI 开发使用 `./scripts/dev-ui.sh`，它启动隔离临时数据目录中的真实应用。修改
-`crates/provider-x-app/ui/main.js` 或其导入组件会热重载；草稿和业务操作保留在 Rust 宿主中。
-开发目录中的生成类型声明不进入 Git。发布包内置相同脚本和固定版本的 Omarchy UI，无需启动时下载依赖。
+UI 开发使用 `./scripts/dev-ui.sh`，它启动隔离临时数据目录中的原生 Rust 应用。
+设置页使用 gpui-omarchy 组件，修改后重新编译；不再依赖 JavaScript 运行时、脚本资源或热重载。
+主题偏好保存在 ProviderX 自身目录，“跟随系统”使用 macOS 外观通知，不依赖 Omarchy 主题文件。
 
 基础检查：
 
 ```sh
 cargo fmt --all -- --check
 cargo test --workspace
-node --experimental-vm-modules --test crates/provider-x-app/ui/tests/state.test.mjs
 cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
 ```

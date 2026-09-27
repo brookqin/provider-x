@@ -6,6 +6,7 @@ use std::{fs, path::Path};
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ThemePreference {
     #[default]
+    System,
     Dark,
     Light,
 }
@@ -48,6 +49,21 @@ fn save_value(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn theme_defaults_to_system_and_preserves_explicit_choices() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("preferences/ui-theme.json");
+        assert_eq!(load(&path).unwrap(), ThemePreference::System);
+        for preference in [
+            ThemePreference::Dark,
+            ThemePreference::Light,
+            ThemePreference::System,
+        ] {
+            save(&path, preference).unwrap();
+            assert_eq!(load(&path).unwrap(), preference);
+        }
+    }
 
     #[test]
     fn dock_visibility_defaults_to_hidden_and_survives_reload() {

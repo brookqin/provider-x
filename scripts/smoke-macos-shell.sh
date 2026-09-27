@@ -62,7 +62,7 @@ for _ in {1..50}; do
   sleep 0.1
 done
 grep -q "PROVIDER_X_SMOKE settings_ui=initialized" "$LOG_FILE"
-grep -q "PROVIDER_X_SMOKE settings_script=loaded" "$LOG_FILE"
+grep -q "PROVIDER_X_SMOKE settings_view=ready" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE settings_window=open" "$LOG_FILE"
 OPEN_UI_RSS_KB=$(ps -o rss= -p "$APP_PID" | tr -d ' ')
 OPEN_UI_FOOTPRINT_MB=$(physical_footprint_mb "$APP_PID")

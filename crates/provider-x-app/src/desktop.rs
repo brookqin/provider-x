@@ -7,10 +7,10 @@ use crate::platform::macos::{
 use crate::runtime::AppServices;
 use crate::{control_plane::AppPaths, storage::SingleInstanceGuard};
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Global, TitlebarOptions, WeakEntity, WindowBounds, WindowOptions,
-    px, size,
+    AnyWindowHandle, App, AppContext, Bounds, Global, TitlebarOptions, WeakEntity, WindowBounds,
+    WindowOptions, px, size,
 };
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{rc::Rc, time::Duration};
 const TRAY_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const SETTINGS_RELEASE_GRACE: Duration = Duration::from_secs(5);
 const SMOKE_SETTINGS_RELEASE_GRACE: Duration = Duration::from_millis(250);
@@ -28,10 +28,8 @@ struct TrayControllerGlobal {
 impl Global for TrayControllerGlobal {}
 
 struct SettingsRegistry {
-    view: Option<WeakEntity<gpui_shell::ShellRoot>>,
+    view: Option<WeakEntity<crate::settings::Settings>>,
     components_initialized: bool,
-    runtime: Option<Rc<gpui_shell::ShellRuntime>>,
-    watcher: Option<gpui_shell::Watcher>,
     release_generation: u64,
     release_pending: bool,
     release_delay: Duration,
@@ -43,8 +41,6 @@ impl SettingsRegistry {
         Self {
             view: None,
             components_initialized: false,
-            runtime: None,
-            watcher: None,
             release_generation: 0,
             release_pending: false,
             release_delay,
@@ -69,8 +65,6 @@ impl SettingsRegistry {
         }
         self.release_pending = false;
         self.view = None;
-        self.watcher = None;
-        self.runtime = None;
         true
     }
 }
@@ -122,17 +116,17 @@ pub fn run() -> anyhow::Result<()> {
     let locale_store = UiLocaleStore::new(paths.ui_locale);
     let locale = match locale_store.load() {
         Ok(Some(locale)) => locale,
-        Ok(None) => UiLocale::system_default(),
+        Ok(None) => UiLocale::System,
         Err(error) => {
             eprintln!("failed to load UI locale preference: {error}");
-            UiLocale::system_default()
+            UiLocale::System
         }
     };
     locale.activate();
     let startup_error = Rc::new(std::cell::RefCell::new(None));
     let reported_error = Rc::clone(&startup_error);
 
-    let application = gpui_kit::application().with_assets(gpui_shell::AppAssets::new(ui_root()?));
+    let application = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     application.on_reopen(|cx| {
         if cx.has_global::<SettingsRegistry>() && !cx.global::<SettingsRegistry>().quitting {
             let _ = open_or_focus_settings(cx);
@@ -454,8 +448,8 @@ fn sync_settings_codex_status(
     message: &str,
     _success: bool,
 ) {
-    if cx.has_global::<crate::ui_host::UiHost>() {
-        cx.global::<crate::ui_host::UiHost>()
+    if cx.has_global::<crate::settings_state::SettingsState>() {
+        cx.global::<crate::settings_state::SettingsState>()
             .set_message(message.to_owned());
     }
 }
@@ -465,8 +459,9 @@ fn redacted_codex_disable_diagnostic(_error: &str) -> &'static str {
 }
 
 fn sync_settings_codex_error(cx: &mut App, error: String) {
-    if cx.has_global::<crate::ui_host::UiHost>() {
-        cx.global::<crate::ui_host::UiHost>().set_message(error);
+    if cx.has_global::<crate::settings_state::SettingsState>() {
+        cx.global::<crate::settings_state::SettingsState>()
+            .set_message(error);
     }
 }
 
@@ -500,18 +495,14 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
     }
 
     ensure_settings_ui_initialized(cx)?;
-    let runtime = gpui_shell::ShellRuntime::new(cx)?;
-    let builder_runtime = Rc::clone(&runtime);
-    let root_path = ui_root()?;
-    let script_failed = Rc::new(Cell::new(false));
-    let check_failed = Rc::clone(&script_failed);
-    let bounds = Bounds::centered(None, size(px(1080.0), px(760.0)), cx);
+    let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(900.0), px(640.0))),
             titlebar: Some(TitlebarOptions {
                 title: Some("ProviderX".into()),
+                appears_transparent: true,
                 ..TitlebarOptions::default()
             }),
             ..WindowOptions::default()
@@ -525,26 +516,12 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
                 schedule_settings_window_release(window_handle, cx);
                 false
             });
-            let root = if let Ok(root) = builder_runtime.try_load(&root_path, window, cx) {
-                println!("PROVIDER_X_SMOKE settings_script=loaded");
-                root
-            } else {
-                check_failed.set(true);
-                builder_runtime.load(&root_path, window, cx)
-            };
-            if cfg!(debug_assertions) && std::env::var_os("PROVIDER_X_UI_WATCH").is_some() {
-                match builder_runtime.watch(&root, window, cx) {
-                    Ok(watcher) => cx.global_mut::<SettingsRegistry>().watcher = Some(watcher),
-                    Err(_) => eprintln!("could not watch settings scripts"),
-                }
-            }
-            let registry = cx.global_mut::<SettingsRegistry>();
-            registry.view = Some(root.downgrade());
-            registry.runtime = Some(builder_runtime);
+            let root = cx.new(|cx| crate::settings::Settings::new(window, cx));
+            println!("PROVIDER_X_SMOKE settings_view=ready");
+            cx.global_mut::<SettingsRegistry>().view = Some(root.downgrade());
             root
         },
     )?;
-    anyhow::ensure!(!script_failed.get(), "settings script load failed");
     cx.activate(true);
     println!("PROVIDER_X_SMOKE settings_window=open");
     Ok(())
@@ -552,50 +529,13 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
 
 fn ensure_settings_ui_initialized(cx: &mut App) -> anyhow::Result<()> {
     if !cx.global::<SettingsRegistry>().components_initialized {
-        gpui_shell::init(cx);
-        crate::ui_host::register(cx)?;
+        gpui_omarchy::init(cx);
+        gpui_omarchy::Theme::tokyo_night().apply(cx);
+        crate::settings_state::register(cx)?;
         cx.global_mut::<SettingsRegistry>().components_initialized = true;
         println!("PROVIDER_X_SMOKE settings_ui=initialized");
     }
     Ok(())
-}
-
-/// Generates the same declarations as the runtime before application resources are signed.
-/// # Errors
-/// Returns a host-module registration or filesystem error.
-pub fn prepare_ui_bundle(root: &std::path::Path) -> anyhow::Result<()> {
-    // Build tooling exposes only signatures, without creating services or touching user data.
-    let mut module = gpui_shell::HostModule::new("providerx");
-    for name in [
-        "action", "edit", "open", "secret", "select", "snapshot", "text",
-    ] {
-        module = module.function(name, |_| {
-            Err(gpui_shell::HostError::new("declaration-only host"))
-        });
-    }
-    gpui_shell::export_module(module)?;
-    gpui_shell::write_type_declarations_with_components(
-        root,
-        &gpui_shell::FrozenComponentRegistry::default(),
-    )?;
-    Ok(())
-}
-
-fn ui_root() -> anyhow::Result<std::path::PathBuf> {
-    if cfg!(debug_assertions) {
-        return Ok(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));
-    }
-    let executable = std::env::current_exe()?;
-    let contents = executable
-        .parent()
-        .and_then(std::path::Path::parent)
-        .ok_or_else(|| anyhow::anyhow!("application bundle is missing"))?;
-    let root = contents.join("Resources/ui");
-    anyhow::ensure!(
-        root.join("main.js").is_file(),
-        "bundled settings UI is missing"
-    );
-    Ok(root)
 }
 
 fn schedule_settings_window_release(handle: AnyWindowHandle, cx: &mut App) {

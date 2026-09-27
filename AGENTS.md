@@ -28,7 +28,7 @@ when dependencies change.
 - `crates/provider-x-egress`: loopback server, routing, authorization handling, connection limits,
   timeouts, streaming, cancellation, graceful shutdown, and runtime snapshot publication.
 - `crates/provider-x-app`: control plane, secure persistence, Codex configuration integration,
-  localization, Rust UI host, GPUI Kit/Shell with vendored Omarchy UI, and macOS lifecycle.
+  localization, native gpui-omarchy settings, and macOS lifecycle.
 - `crates/provider-x-contract-probe`: executable used for controlled, redacted integration probes.
 - `tests/contract`: real Codex/ChatGPT contract fixtures and experimental probes.
 - `scripts`: macOS bundle build, verification, lifecycle smoke, and measurement scripts.
@@ -41,8 +41,9 @@ when dependencies change.
   Preset defaults compile into saved instances; model visibility belongs to saved `models[].enabled`.
 - Keep API and subscription modes under their vendor family. Anthropic subscriptions execute local
   Claude Code with caller-owned tools, never direct subscription HTTP. Do not auto-install or read CLI credentials.
-- Keep UI scripts in `crates/provider-x-app/ui`; Rust owns credentials, persistence and async work.
-  Use `scripts/dev-ui.sh` for isolated hot reload. Bundle vendored scripts before signing and disable release watchers.
+- Keep the settings UI in Rust using `gpui-omarchy`; do not reintroduce gpui-shell or JavaScript UI.
+  Use `scripts/dev-ui.sh` for an isolated native app run; rebuild after editing.
+  Follow macOS appearance through native notifications and persist preferences only in ProviderX storage.
 
 - Organize routing and conversion by protocol, not by provider vendor. A vendor-specific UI
   template must compile into the same typed `ProviderConfig` used by custom providers.
@@ -160,7 +161,6 @@ cargo test -p provider-x-catalog
 cargo test -p provider-x-egress --test http_proxy
 cargo test -p provider-x-app
 cargo test -p provider-x-app --test codex_config
-node --experimental-vm-modules --test crates/provider-x-app/ui/tests/state.test.mjs
 ```
 
 Apple Silicon macOS packaging and UI-shell checks:

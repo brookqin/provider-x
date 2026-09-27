@@ -1,5 +1,2 @@
 /target/
 .DS_Store
-/crates/provider-x-app/ui/**/gpui-kit.d.ts
-/crates/provider-x-app/ui/node_modules/
-/crates/provider-x-app/ui/jsconfig.json

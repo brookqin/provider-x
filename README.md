@@ -19,7 +19,7 @@ configured provider.
 - **Avoid another heavyweight runtime.** ProviderX does not install or bundle another Chromium
   runtime, embedded browser, Bun, or Node.js.
 - **Use fewer resources.** An embedded browser plus an H5 interface is unnecessary for a small
-  settings application. ProviderX uses GPUI Kit, GPUI Shell and Omarchy UI for a native settings window and runs as a native macOS
+  settings application. ProviderX uses GPUI Kit and gpui-omarchy for a native settings window and runs as a native macOS
   menu-bar application.
 - **Stay focused.** ProviderX is not intended to become an all-purpose AI gateway. Its purpose is to
   preserve the native capabilities of the primary GPT experience while adding a small selection of
@@ -42,6 +42,9 @@ configured provider.
   and English or Simplified Chinese UI from a native GPUI settings window.
 - Optionally show a Dock icon to reopen settings. Hiding the icon keeps the settings window open;
   closing the window keeps the router running.
+- Use grouped settings with switches and select menus, including multiple reasoning-level choices.
+  Appearance can follow the system; automatic language uses the system language and falls back to
+  English when unsupported. The transparent title bar blends into the window content.
 - Respect `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` for upstream connections.
 - Record redacted request routing, upstream responses, and runtime errors in private daily local
   logs with 10-day retention.
@@ -213,17 +216,16 @@ accordingly.
 The project is a Cargo workspace using Rust 2024. See [AGENTS.md](AGENTS.md) for crate boundaries,
 architectural invariants, security requirements, and change-specific validation guidance.
 
-Run `./scripts/dev-ui.sh` for the real UI with isolated temporary data. Editing
-`crates/provider-x-app/ui/main.js` or its imported components hot reloads the window while
-Rust retains drafts and business operations. Generated type declarations stay out of Git.
-Release bundles include the same scripts and pinned Omarchy UI sources, with no startup download.
+Run `./scripts/dev-ui.sh` for the native Rust UI with isolated temporary data.
+The settings view uses gpui-omarchy components; rebuild the application after UI changes.
+No JavaScript runtime, script bundle, or hot reload is required. Theme preferences are saved
+in ProviderX storage. Following system appearance uses macOS notifications, not Omarchy theme files.
 
 Baseline checks:
 
 ```sh
 cargo fmt --all -- --check
 cargo test --workspace
-node --experimental-vm-modules --test crates/provider-x-app/ui/tests/state.test.mjs
 cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
 ```

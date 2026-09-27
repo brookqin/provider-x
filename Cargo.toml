@@ -26,8 +26,9 @@ chrono = "0.4"
 futures-util = "0.3"
 fs2 = "0.4"
 getrandom = "0.4"
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "452e72f24a183174551fdec3db570997b1e1fc8f", default-features = false }
-gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "452e72f24a183174551fdec3db570997b1e1fc8f" }
+gpui-kit = { version = "=0.6.6", default-features = false, features = ["assets"] }
+# Fork fixes Button Group focus synchronization and uses the shared focus border.
+gpui-omarchy = { git = "https://github.com/brookqin/gpui-omarchy", rev = "ca2552c099e784f8c79f50acc3ed52fd2a4437db" }
 hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["client", "http1", "http2", "server"] }
@@ -55,10 +56,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-
-[patch.crates-io]
-# Shell's LLRT modules and engine must share the same QuickJS types.
-rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "452e72f24a183174551fdec3db570997b1e1fc8f" }
 
 [workspace.lints.clippy]
 all = "warn"

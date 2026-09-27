@@ -36,11 +36,8 @@ plutil -replace CFBundleShortVersionString -string "$APP_VERSION" \
   "$APP_DIR/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$APP_VERSION" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/LICENSE" "$APP_DIR/Contents/Resources/LICENSE"
-mkdir -p "$APP_DIR/Contents/Resources/ui"
-rsync -a --exclude gpui-kit.d.ts --exclude node_modules --exclude jsconfig.json --exclude tests \
-  "$PROJECT_DIR/crates/provider-x-app/ui/" "$APP_DIR/Contents/Resources/ui/"
-# Shell refreshes declarations during load. Generate identical files before sealing resources.
-"$PROJECT_DIR/target/release/provider-x" --prepare-ui-bundle "$APP_DIR/Contents/Resources/ui"
+cp "$PROJECT_DIR/crates/provider-x-app/resources/LICENSE-GPUI-OMARCHY" \
+  "$APP_DIR/Contents/Resources/LICENSE-GPUI-OMARCHY"
 cp "$PROJECT_DIR/crates/provider-x-app/resources/icons/LICENSE-LUCIDE" \
   "$APP_DIR/Contents/Resources/LICENSE-LUCIDE"
 iconutil --convert icns \
