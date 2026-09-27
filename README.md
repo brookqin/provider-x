@@ -19,15 +19,11 @@ configured provider.
 - **Avoid another heavyweight runtime.** ProviderX does not install or bundle another Chromium
   runtime, embedded browser, Bun, or Node.js.
 - **Use fewer resources.** An embedded browser plus an H5 interface is unnecessary for a small
-  settings application. ProviderX uses GPUI for a native settings window and runs as a native macOS
+  settings application. ProviderX uses GPUI Kit and gpui-omarchy for a native settings window and runs as a native macOS
   menu-bar application.
 - **Stay focused.** ProviderX is not intended to become an all-purpose AI gateway. Its purpose is to
   preserve the native capabilities of the primary GPT experience while adding a small selection of
   cost-effective third-party models.
-
-## Screenshots
-
-<p align="center"><img src="docs/settings-en.png" alt="ProviderX global settings in English" width="48%">&nbsp;<img src="docs/providers-en.png" alt="ProviderX provider settings in English" width="48%"></p>
 
 ## Features
 
@@ -42,15 +38,20 @@ configured provider.
   stateful tool continuations.
 - Discover provider models explicitly, map dedicated implementations to their
   [models.dev](https://models.dev/) provider IDs, and enrich missing metadata with exact matches.
-- Manage provider settings, model visibility and capabilities, Codex integration, launch at login,
+- Manage provider settings, model visibility and capabilities, Codex integration, launch at login, Dock visibility,
   and English or Simplified Chinese UI from a native GPUI settings window.
+- Optionally show a Dock icon to reopen settings. Hiding the icon keeps the settings window open;
+  closing the window keeps the router running.
+- Use grouped settings with switches and select menus, including multiple reasoning-level choices.
+  The provider page lists each connection with its connection mode, selected models, and enabled-model count; click a row to edit it, or add a connection in a dialog. Removing a connection requires confirmation.
+  Appearance can follow the system; automatic language uses the system language and falls back to
+  English when unsupported. The transparent title bar blends into the window content.
 - Respect `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` for upstream connections.
 - Record redacted request routing, upstream responses, and runtime errors in private daily local
   logs with 10-day retention.
 
 ### Planned
 
-- Add provider templates for GLM, KIMI, MiniMax, and other services.
 - Support complete third-party subagent scheduling, including readable task delivery and follow-up
   messages.
 
@@ -110,7 +111,7 @@ communication. This limitation does not affect selecting a third-party model for
 ## Requirements
 
 - Apple Silicon Mac (`arm64`)
-- Rust 1.85 or newer with Cargo
+- Rust 1.97.1 or newer with Cargo
 - Xcode Command Line Tools, including `codesign`, `iconutil`, `lipo`, and `plutil`
 - Credentials for each third-party provider you choose to configure
 
@@ -135,24 +136,34 @@ PROVIDER_X_CODESIGN_IDENTITY="Developer ID Application: Example" \
 
 ## Configure a Provider
 
-1. Launch ProviderX and choose **Open Settings** from its menu-bar item.
-2. Select **Add provider**.
-3. Choose a provider template or **Custom**. Dedicated templates require a name and their fixed
-   credential method (API key or browser account sign-in); custom providers also expose the
-   upstream protocol, HTTP endpoint, and optional WebSocket endpoint.
-4. Refresh the model list. Review model names and optional capability metadata as needed.
-5. Save the provider and enable it.
-6. Open **Global Settings** and enable **Codex / ChatGPT Desktop Integration**.
-7. Fully quit and restart ChatGPT Desktop, then select a namespaced model such as
-   `provider-id/model-id`.
+1. Open settings from the menu bar and choose a provider family.
+2. Select an API, subscription, or regional connection and supply its required credentials. Local services need no key.
+3. Discover models or enter model IDs manually, then enable the models you need. Capability metadata and connection testing are optional.
+4. Save. Advanced settings expose API protocol, HTTP, discovery, and WebSocket endpoints.
+5. Enable Codex / ChatGPT Desktop integration under **App integration**.
+6. Fully restart ChatGPT Desktop and choose a `provider-id/model-id` model.
 
-Dedicated provider templates include their recommended protocol, official endpoints, discovery
-behavior, and models.dev provider ID, so they do not expose protocol or endpoint selection. Create
-a custom provider when another compatible protocol or a non-standard endpoint is required.
+Presets cover OpenAI, Anthropic, DeepSeek, Kimi, Qwen, Z.ai, MiniMax, xAI, OpenRouter,
+OpenCode Zen/Go, Ollama, LM Studio, and custom connections. Defaults are copied when selected;
+saved instances own their endpoints and protocols. This breaking upgrade requires provider
+schema 3. Incompatible provider settings and model caches are automatically backed up before
+starting with empty provider settings. A notice shows the backup folder and opens provider setup;
+Codex integration records are preserved. Old formats are not converted or supported at runtime.
 
-Custom Anthropic providers default to `anthropic_thinking: adaptive`, which is required by current
-Claude models. Compatible endpoints that implement legacy/manual extended thinking can explicitly
-select `enabled` in the provider document.
+OpenAI API and ChatGPT subscription connections share one family. Subscription sign-in uses
+browser OAuth with direct HTTP/WebSocket access. Anthropic API keys use Messages;
+Anthropic subscriptions run the locally installed, signed-in Claude Code executable.
+ProviderX does not install Claude Code, read its credentials, or fall back to direct subscription HTTP calls.
+The installation check only checks for a program file; it does not verify authentication or inference.
+
+The Claude bridge starts an isolated process for each request and supplies caller-owned history
+as input context. It does not reuse CLI sessions or promise native prompt-cache continuity.
+Caller tools are exposed through loopback MCP and returned to the caller for execution; built-in
+CLI tools are disabled. This path has fake-process coverage only; live subscription validation remains pending. Text and caller tools are supported; image/document blocks are rejected.
+Optional connection testing checks model discovery, not inference or every model capability.
+
+Anthropic defaults to `anthropic_thinking: adaptive`; endpoints requiring manual extended
+thinking can explicitly select `enabled` in the provider document.
 
 When integration is disabled, ProviderX restores the Codex settings it previously managed as long
 as those values have not been changed externally. Keep ProviderX running until active tasks finish,
@@ -206,6 +217,11 @@ accordingly.
 The project is a Cargo workspace using Rust 2024. See [AGENTS.md](AGENTS.md) for crate boundaries,
 architectural invariants, security requirements, and change-specific validation guidance.
 
+Run `./scripts/dev-ui.sh` for the native Rust UI with isolated temporary data.
+The settings view uses gpui-omarchy components; rebuild the application after UI changes.
+No JavaScript runtime, script bundle, or hot reload is required. Theme preferences are saved
+in ProviderX storage. Following system appearance uses macOS notifications, not Omarchy theme files.
+
 Baseline checks:
 
 ```sh
@@ -220,6 +236,7 @@ Apple Silicon macOS bundle and lifecycle checks:
 ```sh
 ./scripts/build-macos-app.sh
 ./scripts/smoke-macos-shell.sh
+./scripts/smoke-offline-ui.sh
 ```
 
 Live provider and real Codex/ChatGPT Desktop probes are opt-in. Never record authorization headers,

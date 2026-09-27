@@ -10,7 +10,7 @@ Codex and ChatGPT Desktop. It keeps official OpenAI traffic transparent while ro
 third-party models to configured providers. It supports OpenAI Responses, including WebSocket to
 HTTP/SSE bridging, and OpenAI Chat Completions through protocol adapters.
 
-The workspace uses Rust 2024, requires Rust 1.85 or newer, and forbids unsafe Rust. The primary
+The workspace uses Rust 2024, requires Rust 1.97.1 or newer, and forbids unsafe Rust. The primary
 shipping target is Apple Silicon macOS. Keep `Cargo.lock` committed and update it intentionally
 when dependencies change.
 
@@ -18,25 +18,32 @@ when dependencies change.
 
 - `crates/provider-x-core`: validated configuration, model and provider identities, routing,
   runtime snapshots, and proxy-environment policy. Keep this crate transport- and UI-neutral.
-- `crates/provider-x-protocol`: protocol-neutral contracts for stateful WebSocket-to-HTTP bridges.
-- `crates/protocol-openai-responses`: OpenAI Responses path handling, request inspection and
-  rewriting, model-list behavior, HTTP/SSE framing, and WebSocket bridge state.
-- `crates/protocol-openai-chat-completions`: conversion between Responses semantics and OpenAI
-  Chat Completions HTTP/SSE semantics.
+- `crates/provider-x-protocol`: Responses, Chat Completions and Anthropic Messages codecs,
+  shared bounded semantic stream output, and stateful WebSocket-to-HTTP contracts.
 - `crates/provider-x-network`: shared direct/proxied HTTP, HTTPS, and WebSocket connector policy.
-- `crates/provider-x-providers`: dedicated vendor profiles, custom-provider profiles, fixed
-  protocol/endpoint choices, and models.dev provider identity mapping.
-- `crates/provider-x-catalog`: provider model discovery, model-registry recommendations, review
-  state, and private catalog projection.
+- `crates/provider-x-providers`: family/connection presets, compiled profiles, compatibility policies,
+  OpenAI OAuth and local Claude Code execution.
+- `crates/provider-x-catalog`: optional discovery, model-registry recommendations and private
+  catalog projection from saved model selections. No review or readiness gate.
 - `crates/provider-x-egress`: loopback server, routing, authorization handling, connection limits,
   timeouts, streaming, cancellation, graceful shutdown, and runtime snapshot publication.
 - `crates/provider-x-app`: control plane, secure persistence, Codex configuration integration,
-  localization, GPUI settings UI, and the macOS tray/runtime lifecycle.
+  localization, native gpui-omarchy settings, and macOS lifecycle.
 - `crates/provider-x-contract-probe`: executable used for controlled, redacted integration probes.
 - `tests/contract`: real Codex/ChatGPT contract fixtures and experimental probes.
 - `scripts`: macOS bundle build, verification, lifecycle smoke, and measurement scripts.
 
 ## Architectural Rules
+
+- Provider schema 3 is a breaking replacement. Do not add old-schema migrations or compatibility wrappers.
+  Incompatible configurations are automatically backed up before starting with empty provider settings;
+  preserve Codex integration receipts and the recoverable backup transaction.
+  Preset defaults compile into saved instances; model visibility belongs to saved `models[].enabled`.
+- Keep API and subscription modes under their vendor family. Anthropic subscriptions execute local
+  Claude Code with caller-owned tools, never direct subscription HTTP. Do not auto-install or read CLI credentials.
+- Keep the settings UI in Rust using `gpui-omarchy`; do not reintroduce gpui-shell or JavaScript UI.
+  Use `scripts/dev-ui.sh` for an isolated native app run; rebuild after editing.
+  Follow macOS appearance through native notifications and persist preferences only in ProviderX storage.
 
 - Organize routing and conversion by protocol, not by provider vendor. A vendor-specific UI
   template must compile into the same typed `ProviderConfig` used by custom providers.
@@ -92,8 +99,9 @@ when dependencies change.
 
 ## macOS Application and Localization
 
-- Keep the app an accessory/menu-bar application. Closing the settings window must not terminate
-  the router, and reopening it must reuse the single running instance.
+- Default to an accessory/menu-bar application; users may opt into showing the Dock icon. Closing
+  the settings window must not terminate the router, and reopening it from the Dock or tray must reuse
+  the single running instance.
 - Preserve single-instance locking and startup handoff behavior. The process lock must outlive the
   egress handle and Tokio runtime during shutdown.
 - Keep platform-specific code under `crates/provider-x-app/src/platform/macos` or behind an
@@ -147,8 +155,7 @@ Useful focused checks:
 ```sh
 cargo test -p provider-x-core
 cargo test -p provider-x-protocol
-cargo test -p protocol-openai-responses
-cargo test -p protocol-openai-chat-completions
+cargo test -p provider-x-providers
 cargo test -p provider-x-network
 cargo test -p provider-x-catalog
 cargo test -p provider-x-egress --test http_proxy
@@ -162,6 +169,7 @@ Apple Silicon macOS packaging and UI-shell checks:
 ./scripts/build-macos-app.sh
 ./scripts/create-macos-dmg.sh
 ./scripts/smoke-macos-shell.sh
+./scripts/smoke-offline-ui.sh
 ```
 
 `build-macos-app.sh` already invokes `verify-macos-app.sh` on the generated app. It creates an ad-hoc

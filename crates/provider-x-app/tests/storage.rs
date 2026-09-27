@@ -9,7 +9,7 @@ use provider_x_core::ProvidersDocument;
 use serde_json::json;
 
 const PROVIDERS_YAML: &str = r"
-schema_version: 1
+schema_version: 3
 listener:
   host: 127.0.0.1
   port: 43119
@@ -26,6 +26,25 @@ codex:
   manage_user_config: true
 providers: []
 ";
+
+#[test]
+fn old_schema_returns_typed_error_without_modifying_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("providers.yaml");
+    let old = "schema_version: 1\nsecret: synthetic-do-not-display\n";
+    fs::write(&path, old).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let error = ProviderConfigStore::new(&path).load().unwrap_err();
+    assert!(matches!(
+        error,
+        ProviderConfigStoreError::UnsupportedSchema {
+            actual: 1,
+            expected: 3
+        }
+    ));
+    assert!(!error.to_string().contains("synthetic"));
+    assert_eq!(fs::read_to_string(path).unwrap(), old);
+}
 
 #[test]
 fn store_writes_private_file_and_detects_concurrent_change() {

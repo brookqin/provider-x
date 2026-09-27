@@ -188,19 +188,6 @@ pub enum ProtocolId {
     AnthropicMessages,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    #[serde(rename = "deepseek")]
-    DeepSeek,
-    #[serde(rename = "openai")]
-    OpenAi,
-    #[serde(rename = "openai_oauth")]
-    OpenAiOAuth,
-    #[default]
-    Custom,
-}
-
 /// Protocol-neutral result of a Provider's explicit model-list request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredModel {
@@ -210,13 +197,6 @@ pub struct DiscoveredModel {
     pub supported_reasoning_levels: Option<Vec<String>>,
     pub supports_parallel_tool_calls: Option<bool>,
     pub supports_search_tool: Option<bool>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelPublicationStatus {
-    NeedsReview,
-    Ready,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,7 +212,7 @@ pub struct ProviderModelSpec {
     pub upstream_model_id: ModelId,
     pub catalog_model_id: CatalogModelId,
     pub display_name: String,
-    pub publication_status: ModelPublicationStatus,
+    pub enabled: bool,
     pub context_window: Option<u64>,
     #[serde(default)]
     pub supported_reasoning_levels: Vec<String>,

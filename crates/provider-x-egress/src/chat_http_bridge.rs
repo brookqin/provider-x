@@ -8,7 +8,7 @@ use std::{
 use bytes::Bytes;
 use hyper::body::{Body, Frame, Incoming};
 use pin_project_lite::pin_project;
-use protocol_openai_chat_completions::ChatSseDecoder;
+use provider_x_protocol::chat_completions::ChatSseDecoder;
 use tokio::time::{Instant, Sleep};
 
 use crate::timeouts::BoxError;

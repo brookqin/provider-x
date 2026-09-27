@@ -36,6 +36,8 @@ plutil -replace CFBundleShortVersionString -string "$APP_VERSION" \
   "$APP_DIR/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$APP_VERSION" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/LICENSE" "$APP_DIR/Contents/Resources/LICENSE"
+cp "$PROJECT_DIR/crates/provider-x-app/resources/LICENSE-GPUI-OMARCHY" \
+  "$APP_DIR/Contents/Resources/LICENSE-GPUI-OMARCHY"
 cp "$PROJECT_DIR/crates/provider-x-app/resources/icons/LICENSE-LUCIDE" \
   "$APP_DIR/Contents/Resources/LICENSE-LUCIDE"
 iconutil --convert icns \

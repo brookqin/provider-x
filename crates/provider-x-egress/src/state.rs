@@ -287,9 +287,8 @@ mod tests {
 
     use provider_x_core::{
         AuthConfig, CatalogModelId, CodexConfig, EndpointConfig, ListenerConfig,
-        ModelCacheDocument, ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig,
-        ProviderId, ProviderModelCache, ProviderModelSource, ProviderModelSpec, ProvidersDocument,
-        TimeoutConfig, TransportConfig,
+        ModelCacheDocument, ModelId, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache,
+        ProviderModelSource, ProviderModelSpec, ProvidersDocument, TimeoutConfig, TransportConfig,
     };
 
     use super::{EgressState, IngressCapability};
@@ -302,9 +301,12 @@ mod tests {
             name: "Provider A".to_owned(),
             description: None,
             enabled: true,
-            kind: provider_x_core::ProviderKind::Custom,
+            preset: "custom".to_owned(),
+            connection: "api".to_owned(),
+            models: Vec::new(),
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
+            reasoning_policy: provider_x_core::ReasoningPolicy::Native,
             endpoints: EndpointConfig {
                 http: endpoint.to_owned(),
                 websocket: None,
@@ -321,7 +323,7 @@ mod tests {
         let fingerprint = provider_x_providers::resolve_provider(&provider)
             .routing_fingerprint()
             .unwrap();
-        let providers = ProvidersDocument {
+        let mut providers = ProvidersDocument {
             schema_version: provider_x_core::SCHEMA_VERSION,
             listener: ListenerConfig {
                 host: "127.0.0.1".to_owned(),
@@ -357,7 +359,7 @@ mod tests {
                         upstream_model_id: model_id.clone(),
                         catalog_model_id: CatalogModelId::for_provider(&provider_id, &model_id),
                         display_name: "Coder".to_owned(),
-                        publication_status: ModelPublicationStatus::Ready,
+                        enabled: true,
                         context_window: Some(128_000),
                         supported_reasoning_levels: Vec::new(),
                         supports_parallel_tool_calls: Some(false),
@@ -367,6 +369,7 @@ mod tests {
                 },
             )]),
         };
+        providers.providers[0].models = cache.providers[&provider_id].models.clone();
         (providers, cache)
     }
 

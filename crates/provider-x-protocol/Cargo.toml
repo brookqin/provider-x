@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 bytes.workspace = true
+provider-x-core = { path = "../provider-x-core" }
+serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

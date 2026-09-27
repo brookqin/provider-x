@@ -164,10 +164,10 @@ impl RuntimeLog {
         let Ok(sender) = self.sender.lock() else {
             return;
         };
-        if let Some(sender) = sender.as_ref() {
-            if matches!(sender.try_send(entry), Err(mpsc::TrySendError::Full(_))) {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        if let Some(sender) = sender.as_ref()
+            && matches!(sender.try_send(entry), Err(mpsc::TrySendError::Full(_)))
+        {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

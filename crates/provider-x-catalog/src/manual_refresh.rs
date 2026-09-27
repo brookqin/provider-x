@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use provider_x_core::{
-    CatalogModelId, DiscoveredModel, MetadataSource, ModelId, ModelPublicationStatus,
-    ProviderConfig, ProviderModelCache, ProviderModelSpec,
+    CatalogModelId, DiscoveredModel, MetadataSource, ModelId, ProviderConfig, ProviderModelCache,
+    ProviderModelSpec,
 };
 use provider_x_providers::{resolve_provider, validate_provider};
 
@@ -19,16 +19,6 @@ pub struct RefreshPreview {
     pub cache: ProviderModelCache,
     pub added: Vec<ModelId>,
     pub removed: Vec<ModelId>,
-    pub needs_review: Vec<ModelId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelCapabilityConfirmation {
-    pub display_name: String,
-    pub context_window: u64,
-    pub supported_reasoning_levels: Vec<String>,
-    pub supports_parallel_tool_calls: bool,
-    pub supports_search_tool: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,69 +97,7 @@ pub fn set_model_enabled(
         .iter_mut()
         .find(|model| &model.upstream_model_id == model_id)
         .ok_or_else(|| CatalogError::PreviewModelNotFound(model_id.to_string()))?;
-    model.publication_status = if enabled {
-        ModelPublicationStatus::Ready
-    } else {
-        ModelPublicationStatus::NeedsReview
-    };
-    Ok(())
-}
-
-/// Applies explicitly reviewed capabilities to one model in a refresh preview.
-///
-/// Every supplied capability becomes user-confirmed metadata and therefore survives later manual
-/// refreshes when the Provider omits that field.
-///
-/// # Errors
-///
-/// Returns an error when the model is absent, its display name is empty, or its context window is
-/// zero.
-pub fn confirm_model_capabilities(
-    preview: &mut RefreshPreview,
-    model_id: &ModelId,
-    confirmation: ModelCapabilityConfirmation,
-) -> Result<(), CatalogError> {
-    let display_name = confirmation.display_name.trim().to_owned();
-    if display_name.is_empty() {
-        return Err(CatalogError::EmptyModelDisplayName);
-    }
-    if confirmation.context_window == 0 {
-        return Err(CatalogError::InvalidContextWindow);
-    }
-
-    let mut seen_reasoning_levels = BTreeSet::new();
-    let reasoning_levels = confirmation
-        .supported_reasoning_levels
-        .into_iter()
-        .map(|level| level.trim().to_owned())
-        .filter(|level| !level.is_empty())
-        .filter(|level| seen_reasoning_levels.insert(level.clone()))
-        .collect::<Vec<_>>();
-
-    let model = preview
-        .cache
-        .models
-        .iter_mut()
-        .find(|model| &model.upstream_model_id == model_id)
-        .ok_or_else(|| CatalogError::PreviewModelNotFound(model_id.to_string()))?;
-    model.display_name = display_name;
-    model.context_window = Some(confirmation.context_window);
-    model.supported_reasoning_levels = reasoning_levels;
-    model.supports_parallel_tool_calls = Some(confirmation.supports_parallel_tool_calls);
-    model.supports_search_tool = Some(confirmation.supports_search_tool);
-    model.publication_status = ModelPublicationStatus::Ready;
-    for field in [
-        DISPLAY_NAME,
-        CONTEXT_WINDOW,
-        REASONING_LEVELS,
-        PARALLEL_TOOLS,
-        SEARCH_TOOL,
-    ] {
-        model
-            .metadata_sources
-            .insert(field.to_owned(), MetadataSource::UserConfirmed);
-    }
-    preview.needs_review.retain(|pending| pending != model_id);
+    model.enabled = enabled;
     Ok(())
 }
 
@@ -213,11 +141,6 @@ pub fn build_refresh_preview(
 
     let added = new_ids.difference(&old_ids).cloned().collect();
     let removed = old_ids.difference(&new_ids).cloned().collect();
-    let needs_review = models
-        .iter()
-        .filter(|model| model.publication_status == ModelPublicationStatus::NeedsReview)
-        .map(|model| model.upstream_model_id.clone())
-        .collect();
     let profile = resolve_provider(provider);
     let cache = ProviderModelCache {
         config_fingerprint: profile.routing_fingerprint()?,
@@ -230,7 +153,6 @@ pub fn build_refresh_preview(
         cache,
         added,
         removed,
-        needs_review,
     })
 }
 
@@ -277,9 +199,7 @@ fn merge_model(
         catalog_model_id: CatalogModelId::for_provider(&provider.id, &upstream_model_id),
         upstream_model_id,
         display_name,
-        publication_status: old.map_or(ModelPublicationStatus::NeedsReview, |model| {
-            model.publication_status
-        }),
+        enabled: old.is_some_and(|model| model.enabled),
         context_window,
         supported_reasoning_levels,
         supports_parallel_tool_calls,
@@ -346,14 +266,14 @@ mod tests {
     use std::collections::BTreeMap;
 
     use provider_x_core::{
-        AuthConfig, DiscoveredModel, EndpointConfig, MetadataSource, ModelId,
-        ModelPublicationStatus, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache,
-        ProviderModelSource, ProviderModelSpec, TransportConfig,
+        AuthConfig, DiscoveredModel, EndpointConfig, MetadataSource, ModelId, ProtocolId,
+        ProviderConfig, ProviderId, ProviderModelCache, ProviderModelSource, ProviderModelSpec,
+        TransportConfig,
     };
 
     use super::{
-        ModelCapabilityConfirmation, build_refresh_preview, confirm_model_capabilities,
-        set_model_enabled,
+        ModelCapabilitySettings, build_refresh_preview, set_model_enabled,
+        update_model_capabilities,
     };
 
     fn provider() -> ProviderConfig {
@@ -362,9 +282,12 @@ mod tests {
             name: "Provider A".to_owned(),
             description: None,
             enabled: false,
-            kind: provider_x_core::ProviderKind::Custom,
+            preset: "custom".to_owned(),
+            connection: "api".to_owned(),
+            models: Vec::new(),
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
+            reasoning_policy: provider_x_core::ReasoningPolicy::Native,
             endpoints: EndpointConfig {
                 http: "https://gateway.example/v1".to_owned(),
                 websocket: None,
@@ -398,14 +321,11 @@ mod tests {
         .unwrap();
 
         let model = &preview.cache.models[0];
-        assert_eq!(
-            model.publication_status,
-            ModelPublicationStatus::NeedsReview
-        );
+        assert!(!model.enabled);
         assert_eq!(model.supports_parallel_tool_calls, None);
         assert_eq!(model.supports_search_tool, None);
         assert_eq!(preview.added, vec![ModelId::new("coder").unwrap()]);
-        assert_eq!(preview.needs_review, vec![ModelId::new("coder").unwrap()]);
+        assert_eq!(preview.added, vec![ModelId::new("coder").unwrap()]);
     }
 
     #[test]
@@ -428,20 +348,14 @@ mod tests {
         let enabled =
             build_refresh_preview(&provider, discovered(), Some(&initial.cache), "enabled")
                 .unwrap();
-        assert_eq!(
-            enabled.cache.models[0].publication_status,
-            ModelPublicationStatus::Ready
-        );
+        assert!(enabled.cache.models[0].enabled);
 
         let mut disabled = enabled;
         set_model_enabled(&mut disabled, &model_id, false).unwrap();
         let refreshed =
             build_refresh_preview(&provider, discovered(), Some(&disabled.cache), "disabled")
                 .unwrap();
-        assert_eq!(
-            refreshed.cache.models[0].publication_status,
-            ModelPublicationStatus::NeedsReview
-        );
+        assert!(!refreshed.cache.models[0].enabled);
     }
 
     #[test]
@@ -470,7 +384,7 @@ mod tests {
                     &model_id,
                 ),
                 display_name: "Old".to_owned(),
-                publication_status: ModelPublicationStatus::Ready,
+                enabled: true,
                 context_window: Some(64_000),
                 supported_reasoning_levels: vec!["low".to_owned()],
                 supports_parallel_tool_calls: Some(false),
@@ -497,11 +411,11 @@ mod tests {
         assert_eq!(model.context_window, Some(64_000));
         assert_eq!(model.supports_parallel_tool_calls, Some(true));
         assert_eq!(model.supports_search_tool, None);
-        assert_eq!(model.publication_status, ModelPublicationStatus::Ready);
+        assert!(model.enabled);
     }
 
     #[test]
-    fn explicit_confirmation_marks_a_model_ready_and_survives_refresh() {
+    fn capability_edits_preserve_disabled_state_and_survive_refresh() {
         let provider = provider();
         let mut preview = build_refresh_preview(
             &provider,
@@ -519,12 +433,12 @@ mod tests {
         .unwrap();
         let model_id = ModelId::new("coder").unwrap();
 
-        confirm_model_capabilities(
+        update_model_capabilities(
             &mut preview,
             &model_id,
-            ModelCapabilityConfirmation {
+            ModelCapabilitySettings {
                 display_name: " Coder ".to_owned(),
-                context_window: 128_000,
+                context_window: Some(128_000),
                 supported_reasoning_levels: vec!["low".to_owned(), "high".to_owned()],
                 supports_parallel_tool_calls: true,
                 supports_search_tool: false,
@@ -533,9 +447,8 @@ mod tests {
         .unwrap();
 
         let model = &preview.cache.models[0];
-        assert_eq!(model.publication_status, ModelPublicationStatus::Ready);
+        assert!(!model.enabled);
         assert_eq!(model.display_name, "Coder");
-        assert!(preview.needs_review.is_empty());
         assert!(
             model
                 .metadata_sources
@@ -558,6 +471,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(refreshed.cache.models[0], *model);
-        assert!(refreshed.needs_review.is_empty());
+        assert!(refreshed.added.is_empty());
     }
 }

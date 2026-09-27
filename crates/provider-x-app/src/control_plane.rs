@@ -233,7 +233,10 @@ impl ControlPlane {
         mutation: ControlMutation,
     ) -> Result<PreparedControlMutation, ControlPlaneError> {
         let (providers, cache, provider_id, cache_changed) = match mutation {
-            ControlMutation::CommitRefresh { provider, preview } => {
+            ControlMutation::CommitRefresh {
+                mut provider,
+                preview,
+            } => {
                 if preview.cache.config_fingerprint
                     != resolve_provider(&provider).routing_fingerprint()?
                 {
@@ -241,6 +244,7 @@ impl ControlPlane {
                         provider.id.to_string(),
                     ));
                 }
+                provider.models.clone_from(&preview.cache.models);
                 let provider_id = provider.id.clone();
                 let mut providers = self.providers.clone();
                 upsert_provider(&mut providers, provider);
@@ -355,7 +359,7 @@ fn upsert_provider(document: &mut ProvidersDocument, provider: ProviderConfig) {
     }
 }
 
-fn default_providers() -> ProvidersDocument {
+pub(crate) fn default_providers() -> ProvidersDocument {
     ProvidersDocument {
         schema_version: provider_x_core::SCHEMA_VERSION,
         listener: ListenerConfig {
@@ -379,7 +383,7 @@ fn default_providers() -> ProvidersDocument {
     }
 }
 
-fn empty_cache() -> ModelCacheDocument {
+pub(crate) fn empty_cache() -> ModelCacheDocument {
     ModelCacheDocument {
         schema_version: 1,
         providers: BTreeMap::new(),

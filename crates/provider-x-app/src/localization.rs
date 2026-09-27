@@ -1,15 +1,13 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::PathBuf};
 
 use thiserror::Error;
 
 use crate::storage::{SecureFileError, atomic_file};
 
-pub(crate) const ENGLISH_LABEL: &str = "English";
-pub(crate) const SIMPLIFIED_CHINESE_LABEL: &str = "简体中文";
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum UiLocale {
     #[default]
+    System,
     English,
     SimplifiedChinese,
 }
@@ -17,29 +15,21 @@ pub(crate) enum UiLocale {
 impl UiLocale {
     pub(crate) const fn code(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::English => "en",
             Self::SimplifiedChinese => "zh-CN",
         }
     }
 
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::English => ENGLISH_LABEL,
-            Self::SimplifiedChinese => SIMPLIFIED_CHINESE_LABEL,
-        }
-    }
-
-    pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label {
-            ENGLISH_LABEL => Some(Self::English),
-            SIMPLIFIED_CHINESE_LABEL => Some(Self::SimplifiedChinese),
-            _ => None,
-        }
-    }
-
     pub(crate) fn from_identifier(identifier: &str) -> Self {
         let normalized = identifier.trim().replace('_', "-").to_ascii_lowercase();
-        if normalized == "zh" || normalized.starts_with("zh-") {
+        if normalized == "system" {
+            Self::System
+        } else if normalized == "zh"
+            || normalized.starts_with("zh-hans")
+            || normalized.starts_with("zh-cn")
+            || normalized.starts_with("zh-sg")
+        {
             Self::SimplifiedChinese
         } else {
             Self::English
@@ -47,14 +37,9 @@ impl UiLocale {
     }
 
     pub(crate) fn system_default() -> Self {
-        if cfg!(target_os = "macos")
-            && let Ok(output) = Command::new("/usr/bin/defaults")
-                .args(["read", "-g", "AppleLocale"])
-                .output()
-            && output.status.success()
-            && let Ok(value) = String::from_utf8(output.stdout)
-        {
-            return Self::from_identifier(&value);
+        #[cfg(target_os = "macos")]
+        if let Some(language) = objc2_foundation::NSLocale::preferredLanguages().firstObject() {
+            return Self::from_identifier(&language.to_string());
         }
         for variable in ["LC_ALL", "LC_MESSAGES", "LANG"] {
             if let Ok(value) = std::env::var(variable)
@@ -67,7 +52,12 @@ impl UiLocale {
     }
 
     pub(crate) fn activate(self) {
-        rust_i18n::set_locale(self.code());
+        let resolved = if self == Self::System {
+            Self::system_default()
+        } else {
+            self
+        };
+        rust_i18n::set_locale(resolved.code());
     }
 }
 
@@ -95,6 +85,7 @@ impl UiLocaleStore {
         let loaded = atomic_file::load(&self.path)?;
         let value = std::str::from_utf8(&loaded.bytes)?.trim();
         match value {
+            "system" => Ok(Some(UiLocale::System)),
             "en" => Ok(Some(UiLocale::English)),
             "zh-CN" => Ok(Some(UiLocale::SimplifiedChinese)),
             _ => Err(UiLocaleError::Unsupported(value.to_owned())),
@@ -155,6 +146,9 @@ mod tests {
             UiLocale::SimplifiedChinese
         );
         assert_eq!(UiLocale::from_identifier("en_US.UTF-8"), UiLocale::English);
+        assert_eq!(UiLocale::from_identifier("fr-FR"), UiLocale::English);
+        assert_eq!(UiLocale::from_identifier("zh-Hant-TW"), UiLocale::English);
+        assert_eq!(UiLocale::from_identifier("system"), UiLocale::System);
     }
 
     #[test]
@@ -168,11 +162,48 @@ mod tests {
 
         store.save(UiLocale::English).unwrap();
         assert_eq!(store.load().unwrap(), Some(UiLocale::English));
+        store.save(UiLocale::System).unwrap();
+        assert_eq!(store.load().unwrap(), Some(UiLocale::System));
     }
 
     #[test]
     fn bundled_resources_include_english_and_simplified_chinese() {
         assert_eq!(rust_i18n::t!("app.global.about", locale = "en"), "About");
         assert_eq!(rust_i18n::t!("app.global.about", locale = "zh-CN"), "关于");
+    }
+}
+
+#[cfg(test)]
+mod resource_contract_tests {
+    use serde_json::Value;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn contract(value: &Value, prefix: &str, result: &mut BTreeMap<String, BTreeSet<String>>) {
+        if let Value::Object(object) = value {
+            for (key, value) in object {
+                contract(value, &format!("{prefix}.{key}"), result);
+            }
+        } else {
+            let variables = value
+                .as_str()
+                .unwrap_or_default()
+                .split("%{")
+                .skip(1)
+                .filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned()))
+                .collect();
+            result.insert(prefix.to_owned(), variables);
+        }
+    }
+
+    #[test]
+    fn locale_keys_versions_and_interpolation_variables_match() {
+        let en: Value = yaml_serde::from_str(include_str!("../locales/en.yml")).unwrap();
+        let zh: Value = yaml_serde::from_str(include_str!("../locales/zh-CN.yml")).unwrap();
+        assert_eq!(en["_version"], zh["_version"]);
+        let mut english = BTreeMap::new();
+        let mut chinese = BTreeMap::new();
+        contract(&en, "", &mut english);
+        contract(&zh, "", &mut chinese);
+        assert_eq!(english, chinese);
     }
 }

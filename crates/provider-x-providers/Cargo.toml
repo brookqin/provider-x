@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+provider-x-protocol = { path = "../provider-x-protocol" }
 base64.workspace = true
 bytes.workspace = true
 getrandom.workspace = true
@@ -15,14 +16,12 @@ hyper.workspace = true
 hyper-util.workspace = true
 provider-x-core = { path = "../provider-x-core" }
 provider-x-network = { path = "../provider-x-network" }
-protocol-anthropic-messages = { path = "../protocol-anthropic-messages" }
-protocol-openai-chat-completions = { path = "../protocol-openai-chat-completions" }
-protocol-openai-responses = { path = "../protocol-openai-responses" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
+tempfile.workspace = true
 url.workspace = true
 
 [lints]

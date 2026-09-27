@@ -3,7 +3,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
-use hyper::{Method, Request, body::Incoming, header};
+use hyper::{Method, Request, header};
 use provider_x_core::RouteDecision;
 use provider_x_protocol::{
     BridgeFailure, WsHttpAction, WsHttpEventDecoder, WsHttpProtocolAdapter, WsHttpStreamOutcome,
@@ -126,7 +126,7 @@ fn validate_followup_route(
     session_id: u64,
     state: &EgressState,
 ) -> Result<(), WebSocketProxyError> {
-    let inspected = protocol_openai_responses::inspect_ws_text(text)
+    let inspected = provider_x_protocol::responses::inspect_ws_text(text)
         .map_err(|_| WebSocketProxyError::InvalidFirstMessage)?;
     let decision = runtime.resolve(&inspected.model);
     state.observe(EgressEvent::RequestObserved(crate::RequestObserved {
@@ -221,6 +221,25 @@ async fn request_http<A: WsHttpProtocolAdapter>(
     state: &EgressState,
     shutdown: &mut watch::Receiver<WebSocketShutdown>,
 ) -> Result<WsHttpStreamOutcome<A::Commit>, WebSocketProxyError> {
+    if provider.profile.execution_backend() == provider_x_providers::ExecutionBackend::ClaudeCode {
+        let stream = provider_x_providers::claude_code::start(
+            &body,
+            state.request_body_limit_bytes,
+            Duration::from_millis(state.stream_idle_timeout_ms),
+        )
+        .await
+        .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?;
+        return collect_sse::<A>(
+            adapter,
+            downstream,
+            stream
+                .map_err(|error| Box::new(error) as crate::timeouts::BoxError)
+                .boxed(),
+            state,
+            shutdown,
+        )
+        .await;
+    }
     let uri: hyper::Uri = provider
         .profile
         .websocket_http_url()
@@ -282,20 +301,30 @@ async fn request_http<A: WsHttpProtocolAdapter>(
     if !response.status().is_success() {
         return Err(WebSocketProxyError::UpstreamStatus(response.status()));
     }
-    collect_sse::<A>(adapter, downstream, response.into_body(), state, shutdown).await
+    collect_sse::<A>(
+        adapter,
+        downstream,
+        response
+            .into_body()
+            .map_err(|error| Box::new(error) as crate::timeouts::BoxError)
+            .boxed(),
+        state,
+        shutdown,
+    )
+    .await
 }
 
 async fn collect_sse<A: WsHttpProtocolAdapter>(
     adapter: &A,
     downstream: &mut DownstreamSocket,
-    mut body: Incoming,
+    mut body: crate::server::ProxyBody,
     state: &EgressState,
     shutdown: &mut watch::Receiver<WebSocketShutdown>,
 ) -> Result<WsHttpStreamOutcome<A::Commit>, WebSocketProxyError> {
     let mut decoder = adapter.new_decoder(state.request_body_limit_bytes);
     loop {
         enum Event {
-            Upstream(Option<Result<hyper::body::Frame<Bytes>, hyper::Error>>),
+            Upstream(Option<Result<hyper::body::Frame<Bytes>, crate::timeouts::BoxError>>),
             Downstream(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
         }
         let event = tokio::select! {

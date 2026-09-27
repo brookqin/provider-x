@@ -175,9 +175,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use provider_x_core::{
-        AuthConfig, CatalogModelId, EndpointConfig, ModelPublicationStatus, ProtocolId,
-        ProviderConfig, ProviderId, ProviderModelCache, ProviderModelSource, ProviderModelSpec,
-        TransportConfig,
+        AuthConfig, CatalogModelId, EndpointConfig, ProtocolId, ProviderConfig, ProviderId,
+        ProviderModelCache, ProviderModelSource, ProviderModelSpec, TransportConfig,
     };
     use serde_json::{Value, json};
 
@@ -193,9 +192,12 @@ mod tests {
             name: "Provider".to_owned(),
             description: None,
             enabled: false,
-            kind: provider_x_core::ProviderKind::Custom,
+            preset: "custom".to_owned(),
+            connection: "api".to_owned(),
+            models: Vec::new(),
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
+            reasoning_policy: provider_x_core::ReasoningPolicy::Native,
             endpoints: EndpointConfig {
                 http: "https://gateway.example/v1".to_owned(),
                 websocket: None,
@@ -227,7 +229,7 @@ mod tests {
                     upstream_model_id: model_id.clone(),
                     catalog_model_id: CatalogModelId::for_provider(&provider.id, &model_id),
                     display_name: "coder".to_owned(),
-                    publication_status: ModelPublicationStatus::NeedsReview,
+                    enabled: false,
                     context_window: None,
                     supported_reasoning_levels: Vec::new(),
                     supports_parallel_tool_calls: None,
@@ -237,7 +239,6 @@ mod tests {
             },
             added: vec![model_id.clone()],
             removed: Vec::new(),
-            needs_review: vec![model_id],
         }
     }
 
@@ -284,10 +285,7 @@ mod tests {
         assert_eq!(model.context_window, Some(128_000));
         assert_eq!(model.supported_reasoning_levels, ["low", "high"]);
         assert_eq!(model.supports_parallel_tool_calls, None);
-        assert_eq!(
-            model.publication_status,
-            ModelPublicationStatus::NeedsReview
-        );
+        assert!(!model.enabled);
         assert!(
             model
                 .metadata_sources
@@ -299,7 +297,7 @@ mod tests {
     #[test]
     fn dedicated_provider_uses_its_models_dev_id_instead_of_instance_namespace() {
         let mut provider = provider("deepseek-secondary");
-        provider.kind = provider_x_core::ProviderKind::DeepSeek;
+        provider.preset = "deepseek".to_owned();
         let mut preview = preview(&provider);
         preview.cache.models[0].upstream_model_id =
             provider_x_core::ModelId::new("deepseek-v4-pro").unwrap();

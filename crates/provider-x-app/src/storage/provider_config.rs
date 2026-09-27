@@ -13,6 +13,9 @@ pub enum ProviderConfigStoreError {
     #[error("invalid Provider YAML: {0}")]
     InvalidDocument(String),
 
+    #[error("unsupported provider schema version {actual}; expected {expected}")]
+    UnsupportedSchema { actual: u32, expected: u32 },
+
     #[error("failed to serialize Provider YAML: {0}")]
     Serialization(String),
 }
@@ -43,8 +46,12 @@ impl ProviderConfigStore {
         let loaded = atomic_file::load(&self.path)?;
         let yaml = String::from_utf8(loaded.bytes)
             .map_err(|error| ProviderConfigStoreError::InvalidDocument(error.to_string()))?;
-        let document = ProvidersDocument::from_yaml(&yaml)
-            .map_err(|error| ProviderConfigStoreError::InvalidDocument(error.to_string()))?;
+        let document = ProvidersDocument::from_yaml(&yaml).map_err(|error| match error {
+            provider_x_core::CoreError::UnsupportedSchemaVersion { actual, expected } => {
+                ProviderConfigStoreError::UnsupportedSchema { actual, expected }
+            }
+            error => ProviderConfigStoreError::InvalidDocument(error.to_string()),
+        })?;
         Ok(LoadedProviderConfig {
             document,
             sha256: loaded.sha256,

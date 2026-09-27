@@ -247,9 +247,12 @@ mod tests {
             name: "Provider A".to_owned(),
             description: None,
             enabled: false,
-            kind: provider_x_core::ProviderKind::Custom,
+            preset: "custom".to_owned(),
+            connection: "api".to_owned(),
+            models: Vec::new(),
             protocol: ProtocolId::OpenaiResponses,
             anthropic_thinking: None,
+            reasoning_policy: provider_x_core::ReasoningPolicy::Native,
             endpoints: EndpointConfig {
                 http: endpoint,
                 websocket: None,

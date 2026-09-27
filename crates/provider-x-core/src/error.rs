@@ -28,13 +28,7 @@ pub enum CoreError {
     #[error("invalid model id {0:?}; it must be non-empty and contain no control characters")]
     InvalidModelId(String),
 
-    #[error("provider {provider_id} is enabled but has no model cache")]
-    MissingModelCache { provider_id: String },
-
-    #[error("provider {provider_id} cache fingerprint is stale")]
-    StaleModelCache { provider_id: String },
-
-    #[error("provider {provider_id} cache contains duplicate model {model_id}")]
+    #[error("provider {provider_id} contains duplicate model {model_id}")]
     DuplicateModel {
         provider_id: String,
         model_id: String,
@@ -71,12 +65,6 @@ pub enum CoreError {
     ProtocolWebSocketUnsupported {
         provider_id: String,
         protocol: &'static str,
-    },
-
-    #[error("ready model {model_id} for provider {provider_id} has incomplete capabilities")]
-    IncompleteReadyModel {
-        provider_id: String,
-        model_id: String,
     },
 
     #[error("failed to serialize provider routing fingerprint: {0}")]

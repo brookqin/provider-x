@@ -8,16 +8,13 @@ members = [
     "crates/provider-x-network",
     "crates/provider-x-providers",
     "crates/provider-x-protocol",
-    "crates/protocol-anthropic-messages",
-    "crates/protocol-openai-chat-completions",
-    "crates/protocol-openai-responses",
 ]
 resolver = "3"
 
 [workspace.package]
 version = "0.7.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.97.1"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]
@@ -29,9 +26,9 @@ chrono = "0.4"
 futures-util = "0.3"
 fs2 = "0.4"
 getrandom = "0.4"
-gpui = { git = "https://github.com/zed-industries/zed", default-features = false }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "60e1cb7d4733fff8558cd387b4a7fca78bb6005b", default-features = false }
-gpui_platform = { git = "https://github.com/zed-industries/zed", default-features = false, features = ["font-kit"] }
+gpui-kit = { version = "=0.6.6", default-features = false, features = ["assets"] }
+# Fork fixes Button Group focus synchronization and uses the shared focus border.
+gpui-omarchy = { git = "https://github.com/brookqin/gpui-omarchy", rev = "ca2552c099e784f8c79f50acc3ed52fd2a4437db" }
 hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["client", "http1", "http2", "server"] }
@@ -55,6 +52,7 @@ tray-icon = { version = "=0.24.2", default-features = false }
 url = "2.5"
 yaml_serde = "0.10"
 zstd = "0.13"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

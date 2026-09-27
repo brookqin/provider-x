@@ -2,15 +2,13 @@ use std::collections::BTreeMap;
 
 use provider_x_core::{
     AnthropicThinkingMode, AuthConfig, CatalogModelId, CodexConfig, EndpointConfig, ListenerConfig,
-    ModelCacheDocument, ModelId, ModelPublicationStatus, ProtocolId, ProviderConfig, ProviderId,
-    ProviderModelCache, ProviderModelSource, ProviderModelSpec, ProvidersDocument, RouteDecision,
-    RouteResolver, RuntimeSnapshot, TimeoutConfig, TransportConfig,
+    ModelCacheDocument, ModelId, ProtocolId, ProviderConfig, ProviderId, ProviderModelCache,
+    ProviderModelSource, ProviderModelSpec, ProvidersDocument, RouteDecision, RouteResolver,
+    RuntimeSnapshot, TimeoutConfig, TransportConfig,
 };
-use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 const PROVIDERS_YAML: &str = r"
-schema_version: 1
+schema_version: 3
 listener:
   host: 127.0.0.1
   port: 43119
@@ -30,6 +28,9 @@ providers:
     name: Compatible Primary
     description: null
     enabled: false
+    preset: custom
+    connection: api
+    models: []
     protocol: openai_responses
     endpoints:
       http: https://gateway.example.com/v1
@@ -48,9 +49,12 @@ fn provider(id: &str, enabled: bool) -> ProviderConfig {
         name: id.to_owned(),
         description: None,
         enabled,
-        kind: provider_x_core::ProviderKind::Custom,
+        preset: "custom".to_owned(),
+        connection: "api".to_owned(),
+        models: Vec::new(),
         protocol: ProtocolId::OpenaiResponses,
         anthropic_thinking: None,
+        reasoning_policy: provider_x_core::ReasoningPolicy::Native,
         endpoints: EndpointConfig {
             http: format!("https://{id}.example/v1"),
             websocket: None,
@@ -90,10 +94,7 @@ fn document(providers: Vec<ProviderConfig>) -> ProvidersDocument {
     }
 }
 
-fn cached_provider(
-    provider: &ProviderConfig,
-    models: &[(&str, ModelPublicationStatus)],
-) -> ProviderModelCache {
+fn cached_provider(provider: &ProviderConfig, models: &[(&str, bool)]) -> ProviderModelCache {
     ProviderModelCache {
         config_fingerprint: provider.routing_fingerprint().unwrap(),
         last_successful_refresh_at: "2026-08-11T10:00:00Z".to_owned(),
@@ -103,7 +104,7 @@ fn cached_provider(
         },
         models: models
             .iter()
-            .map(|(id, publication_status)| {
+            .map(|(id, enabled)| {
                 let upstream_model_id = ModelId::new(*id).unwrap();
                 ProviderModelSpec {
                     catalog_model_id: CatalogModelId::for_provider(
@@ -112,7 +113,7 @@ fn cached_provider(
                     ),
                     upstream_model_id,
                     display_name: (*id).to_owned(),
-                    publication_status: *publication_status,
+                    enabled: *enabled,
                     context_window: Some(128_000),
                     supported_reasoning_levels: vec!["low".to_owned()],
                     supports_parallel_tool_calls: Some(true),
@@ -126,19 +127,21 @@ fn cached_provider(
 
 #[test]
 fn provider_namespace_allows_same_upstream_model_from_multiple_providers() {
-    let first = provider("provider-a", true);
-    let second = provider("provider-b", true);
+    let mut first = provider("provider-a", true);
+    first.models = cached_provider(&first, &[("coder/model", true)]).models;
+    let mut second = provider("provider-b", true);
+    second.models = cached_provider(&second, &[("coder/model", true)]).models;
     let mut cache = ModelCacheDocument {
         schema_version: 1,
         providers: BTreeMap::new(),
     };
     cache.providers.insert(
         first.id.clone(),
-        cached_provider(&first, &[("coder/model", ModelPublicationStatus::Ready)]),
+        cached_provider(&first, &[("coder/model", true)]),
     );
     cache.providers.insert(
         second.id.clone(),
-        cached_provider(&second, &[("coder/model", ModelPublicationStatus::Ready)]),
+        cached_provider(&second, &[("coder/model", true)]),
     );
 
     let snapshot = RuntimeSnapshot::build(&document(vec![first, second]), &cache).unwrap();
@@ -166,7 +169,7 @@ fn bare_models_are_official_and_stale_namespaced_models_fail_closed() {
 }
 
 #[test]
-fn needs_review_models_are_not_published() {
+fn new_models_models_are_not_published() {
     let configured = provider("provider-a", true);
     let mut cache = ModelCacheDocument {
         schema_version: 1,
@@ -174,10 +177,7 @@ fn needs_review_models_are_not_published() {
     };
     cache.providers.insert(
         configured.id.clone(),
-        cached_provider(
-            &configured,
-            &[("coder", ModelPublicationStatus::NeedsReview)],
-        ),
+        cached_provider(&configured, &[("coder", false)]),
     );
 
     let snapshot = RuntimeSnapshot::build(&document(vec![configured]), &cache).unwrap();
@@ -210,55 +210,6 @@ fn fingerprint_does_not_change_when_api_key_rotates() {
 }
 
 #[test]
-fn missing_model_endpoint_preserves_the_legacy_routing_fingerprint() {
-    #[derive(Serialize)]
-    struct LegacyEndpoint<'a> {
-        http: &'a str,
-        websocket: Option<&'a str>,
-    }
-    #[derive(Serialize)]
-    struct LegacyFingerprint<'a> {
-        protocol: ProtocolId,
-        endpoints: LegacyEndpoint<'a>,
-        auth_mode: &'static str,
-        transports: &'a TransportConfig,
-    }
-
-    let configured = provider("provider-a", true);
-    let legacy = serde_json::to_vec(&LegacyFingerprint {
-        protocol: configured.protocol,
-        endpoints: LegacyEndpoint {
-            http: &configured.endpoints.http,
-            websocket: configured.endpoints.websocket.as_deref(),
-        },
-        auth_mode: "bearer",
-        transports: &configured.transports,
-    })
-    .unwrap();
-    let legacy = format!("sha256:{}", hex::encode(Sha256::digest(legacy)));
-    assert_eq!(configured.routing_fingerprint().unwrap(), legacy);
-    let mut cache = ModelCacheDocument {
-        schema_version: 1,
-        providers: BTreeMap::from([(
-            configured.id.clone(),
-            cached_provider(&configured, &[("coder", ModelPublicationStatus::Ready)]),
-        )]),
-    };
-    cache
-        .providers
-        .get_mut(&configured.id)
-        .unwrap()
-        .config_fingerprint
-        .clone_from(&legacy);
-    RuntimeSnapshot::build(&document(vec![configured.clone()]), &cache)
-        .expect("legacy cache fingerprint must remain valid after upgrade");
-
-    let mut overridden = configured;
-    overridden.endpoints.models = Some("https://provider-a.example/models".to_owned());
-    assert_ne!(overridden.routing_fingerprint().unwrap(), legacy);
-}
-
-#[test]
 fn anthropic_thinking_defaults_to_adaptive_and_can_select_enabled() {
     let mut configured = provider("provider-a", false);
     configured.protocol = ProtocolId::AnthropicMessages;
@@ -278,12 +229,6 @@ fn provider_yaml_round_trip_validates_typed_ids() {
     let parsed = ProvidersDocument::from_yaml(PROVIDERS_YAML).unwrap();
     assert_eq!(parsed.providers[0].id.as_str(), "compatible-primary");
 
-    let legacy = PROVIDERS_YAML.replace(
-        "  manage_user_config: true",
-        "  manage_user_config: true\n  catalog_path: /tmp/legacy-codex-models.json",
-    );
-    ProvidersDocument::from_yaml(&legacy).expect("legacy catalog_path remains readable");
-
     let invalid = PROVIDERS_YAML.replace("compatible-primary", "INVALID/provider");
     let error = ProvidersDocument::from_yaml(&invalid).unwrap_err();
     assert!(error.to_string().contains("invalid provider id"));
@@ -292,7 +237,8 @@ fn provider_yaml_round_trip_validates_typed_ids() {
 #[test]
 fn openai_oauth_credentials_round_trip_and_remain_redacted() {
     let mut configured = provider("openai-oauth", false);
-    configured.kind = provider_x_core::ProviderKind::OpenAiOAuth;
+    configured.preset = "openai".to_owned();
+    configured.connection = "subscription".to_owned();
     configured.auth = AuthConfig::OpenAiOAuth {
         access_token: "access-secret".to_owned(),
         refresh_token: "refresh-secret".to_owned(),
@@ -314,79 +260,6 @@ fn openai_oauth_credentials_round_trip_and_remain_redacted() {
     ] {
         assert!(!diagnostic.contains(secret));
     }
-}
-
-#[test]
-fn legacy_deepseek_responses_config_migrates_to_the_dedicated_provider() {
-    let legacy = PROVIDERS_YAML
-        .replace("compatible-primary", "deepseek")
-        .replace("Compatible Primary", "DeepSeek")
-        .replace("https://gateway.example.com/v1", "https://api.deepseek.com");
-    let parsed = ProvidersDocument::from_yaml(&legacy).unwrap();
-
-    assert_eq!(
-        parsed.providers[0].kind,
-        provider_x_core::ProviderKind::DeepSeek
-    );
-
-    let legacy_chat = legacy.replace("openai_responses", "openai_chat_completions");
-    let parsed_chat = ProvidersDocument::from_yaml(&legacy_chat).unwrap();
-    assert_eq!(
-        parsed_chat.providers[0].kind,
-        provider_x_core::ProviderKind::Custom
-    );
-
-    let legacy_custom_models = legacy.replace(
-        "      websocket: null",
-        "      websocket: null\n      models: https://gateway.example.com/models",
-    );
-    let parsed_custom_models = ProvidersDocument::from_yaml(&legacy_custom_models).unwrap();
-    assert_eq!(
-        parsed_custom_models.providers[0].kind,
-        provider_x_core::ProviderKind::Custom
-    );
-}
-
-#[test]
-fn explicit_deepseek_kind_uses_the_models_dev_identifier_spelling() {
-    let yaml = PROVIDERS_YAML
-        .replace("schema_version: 1", "schema_version: 2")
-        .replace(
-            "    protocol: openai_responses",
-            "    kind: deepseek\n    protocol: openai_responses",
-        );
-    let parsed = ProvidersDocument::from_yaml(&yaml).unwrap();
-
-    assert_eq!(
-        parsed.providers[0].kind,
-        provider_x_core::ProviderKind::DeepSeek
-    );
-}
-
-#[test]
-fn schema_two_preserves_explicit_custom_for_a_canonical_deepseek_endpoint() {
-    let yaml = PROVIDERS_YAML
-        .replace("schema_version: 1", "schema_version: 2")
-        .replace("compatible-primary", "deepseek")
-        .replace("https://gateway.example.com/v1", "https://api.deepseek.com")
-        .replace(
-            "    protocol: openai_responses",
-            "    kind: custom\n    protocol: openai_responses",
-        );
-    let parsed = ProvidersDocument::from_yaml(&yaml).unwrap();
-
-    assert_eq!(
-        parsed.providers[0].kind,
-        provider_x_core::ProviderKind::Custom
-    );
-}
-
-#[test]
-fn schema_two_requires_an_explicit_provider_kind() {
-    let yaml = PROVIDERS_YAML.replace("schema_version: 1", "schema_version: 2");
-    let error = ProvidersDocument::from_yaml(&yaml).unwrap_err();
-
-    assert!(error.to_string().contains("missing field `kind`"));
 }
 
 #[test]
@@ -445,7 +318,7 @@ providers:
       - upstream_model_id: " coder "
         catalog_model_id: compatible-primary/coder
         display_name: Coder
-        publication_status: ready
+        enabled: true
         context_window: 128000
         supported_reasoning_levels: []
         supports_parallel_tool_calls: true
@@ -458,8 +331,7 @@ providers:
 #[test]
 fn cache_validation_rejects_catalog_id_mismatch() {
     let configured = provider("provider-a", false);
-    let mut provider_cache =
-        cached_provider(&configured, &[("coder", ModelPublicationStatus::Ready)]);
+    let mut provider_cache = cached_provider(&configured, &[("coder", true)]);
     provider_cache.models[0].catalog_model_id = CatalogModelId::parse("provider-b/coder").unwrap();
     let cache = ModelCacheDocument {
         schema_version: 1,
@@ -471,12 +343,35 @@ fn cache_validation_rejects_catalog_id_mismatch() {
 #[test]
 fn enabled_models_can_use_conservative_catalog_defaults() {
     let configured = provider("provider-a", false);
-    let mut provider_cache =
-        cached_provider(&configured, &[("coder", ModelPublicationStatus::Ready)]);
+    let mut provider_cache = cached_provider(&configured, &[("coder", true)]);
     provider_cache.models[0].context_window = None;
     let cache = ModelCacheDocument {
         schema_version: 1,
         providers: BTreeMap::from([(configured.id, provider_cache)]),
     };
     assert!(cache.validate().is_ok());
+}
+
+#[test]
+fn old_provider_schemas_are_rejected_without_migration() {
+    for version in [1, 2] {
+        let yaml =
+            PROVIDERS_YAML.replace("schema_version: 3", &format!("schema_version: {version}"));
+        assert!(ProvidersDocument::from_yaml(&yaml).is_err());
+    }
+}
+#[test]
+fn configured_models_do_not_require_a_discovery_cache() {
+    let mut configured = provider("provider-a", true);
+    configured.models =
+        cached_provider(&configured, &[("coder", true), ("disabled", false)]).models;
+    let snapshot = RuntimeSnapshot::build(
+        &document(vec![configured]),
+        &ModelCacheDocument {
+            schema_version: 1,
+            providers: BTreeMap::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(snapshot.published_model_count(), 1);
 }
