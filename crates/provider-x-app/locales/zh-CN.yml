@@ -238,3 +238,7 @@ shell:
   integration_inactive: "应用集成未启用。"
   integration_unknown: "正在检查集成状态…"
   integration_changed: "受管设置已变更或上次操作未完成。请检查 Codex 设置后重试。"
+  dock_icon: 在 Dock 中显示应用图标
+  show: 显示
+  hide: 隐藏
+  dock_failed: 无法保存 Dock 显示设置，请重试。

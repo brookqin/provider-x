@@ -250,3 +250,7 @@ shell:
   integration_inactive: "Integration is disabled."
   integration_unknown: "Checking integration status…"
   integration_changed: "Managed settings have changed or an operation is incomplete. Review your Codex settings before retrying."
+  dock_icon: Show application icon in Dock
+  show: Show
+  hide: Hide
+  dock_failed: Could not save Dock visibility. Please try again.

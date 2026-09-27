@@ -99,6 +99,7 @@ pub(crate) fn register(cx: &mut App) -> anyhow::Result<()> {
     let action_state = state.clone();
     let open_state = state.clone();
     let open_services = services.clone();
+    let foreground = cx.foreground_executor().clone();
     gpui_shell::export_module(
         HostModule::new("providerx")
             .function("text", |args| {
@@ -122,6 +123,7 @@ pub(crate) fn register(cx: &mut App) -> anyhow::Result<()> {
                     "integration": session.integration.unwrap_or("unknown"),
                     "failed": session.failed,
                     "theme": session.theme,
+                    "dock_visible": !crate::platform::macos::is_accessory_activation_policy(),
                     "cancellable": session.cancel.is_some(),
                     "locale": rust_i18n::locale().to_string(),
                     "startup": format!("{:?}", crate::platform::macos::launch_at_login_status()),
@@ -208,10 +210,11 @@ pub(crate) fn register(cx: &mut App) -> anyhow::Result<()> {
                     session.revision += 1;
                 }
                 let runner = services.clone();
-                // The Tokio task, not a script promise, owns the operation across reloads.
+                // The Rust task, not a script promise, owns the operation across reloads.
                 let cancellable = matches!(action.as_str(), "login" | "test" | "discover");
                 let completion_state = state.clone();
-                let handle = runner.spawn_cancellable(async move {
+                let needs_main_thread = matches!(action.as_str(), "dock-show" | "dock-hide");
+                let task = async move {
                     let result = run_action(&action, &state, &services).await;
                     if let Ok(mut session) = completion_state.0.lock() {
                         if session.operation != operation { return; }
@@ -221,10 +224,15 @@ pub(crate) fn register(cx: &mut App) -> anyhow::Result<()> {
                         session.message = match result { Ok(message) | Err(message) => message };
                         session.revision += 1;
                     }
-                });
-                if cancellable {
-                    let mut session = action_state.0.lock().map_err(|_| host_error())?;
-                    if session.busy && session.operation == operation { session.cancel = Some(handle); }
+                };
+                if needs_main_thread {
+                    foreground.spawn(task).detach();
+                } else {
+                    let handle = runner.spawn_cancellable(task);
+                    if cancellable {
+                        let mut session = action_state.0.lock().map_err(|_| host_error())?;
+                        if session.busy && session.operation == operation { session.cancel = Some(handle); }
+                    }
                 }
                 Ok(HostValue::Bool(true))
             }),
@@ -238,6 +246,7 @@ async fn run_action(
     services: &AppServices,
 ) -> Result<String, String> {
     match action {
+        "dock-show" | "dock-hide" => dock_action(action == "dock-show", services).await,
         "theme-dark" | "theme-light" => {
             let theme = if action == "theme-dark" {
                 crate::ui_preferences::ThemePreference::Dark
@@ -323,6 +332,26 @@ async fn run_action(
         "discover" | "test" => discover_action(action, state, services).await,
         _ => Err("unknown UI command".to_owned()),
     }
+}
+
+async fn dock_action(visible: bool, services: &AppServices) -> Result<String, String> {
+    let previous = !crate::platform::macos::is_accessory_activation_policy();
+    let path = crate::control_plane::AppPaths::for_home(
+        crate::runtime::data_home().map_err(|_| rust_i18n::t!("shell.dock_failed").to_string())?,
+    )
+    .root
+    .join("ui-dock.json");
+    crate::platform::macos::set_dock_visible(visible)
+        .map_err(|_| rust_i18n::t!("shell.dock_failed").to_string())?;
+    let saved = services
+        .spawn_blocking(move || crate::ui_preferences::save_dock_visible(&path, visible))
+        .await;
+    if !matches!(saved, Ok(Ok(()))) {
+        // Keep the running application consistent with its saved preference on write failure.
+        let _ = crate::platform::macos::set_dock_visible(previous);
+        return Err(rust_i18n::t!("shell.dock_failed").to_string());
+    }
+    Ok(rust_i18n::t!("shell.preference_saved").to_string())
 }
 
 async fn integration_action(

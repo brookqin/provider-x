@@ -22,7 +22,8 @@ ProviderX 在本机提供受保护的 Egress Router，通过带供应商命名�
 - 将 Responses 请求、流式事件、工具调用和有界会话历史适配至 OpenAI Chat Completions 供应商。
 - 将 Responses 请求与流式事件适配至 Anthropic Messages，包括带签名的思考块和有状态工具续接。
 - 由用户主动刷新供应商模型，并将专用厂商实现映射到 [models.dev](https://models.dev/) 的厂商 ID，以精确匹配结果补充缺失元数据。
-- 通过原生 GPUI 设置窗口管理供应商、模型可见性与能力、Codex 集成、开机运行以及英文或简体中文界面。
+- 通过原生 GPUI 设置窗口管理供应商、模型可见性与能力、Codex 集成、开机运行、Dock 图标以及英文或简体中文界面。
+- 可选择显示 Dock 图标，点击图标重新打开设置；隐藏图标时设置窗口保持打开，关闭窗口后路由服务继续运行。
 - 上游连接支持 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
 - 将脱敏后的请求路由、上游响应与运行错误写入按天轮换的本机私有日志，并只保留 10 天。
 

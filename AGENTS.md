@@ -98,8 +98,9 @@ when dependencies change.
 
 ## macOS Application and Localization
 
-- Keep the app an accessory/menu-bar application. Closing the settings window must not terminate
-  the router, and reopening it must reuse the single running instance.
+- Default to an accessory/menu-bar application; users may opt into showing the Dock icon. Closing
+  the settings window must not terminate the router, and reopening it from the Dock or tray must reuse
+  the single running instance.
 - Preserve single-instance locking and startup handoff behavior. The process lock must outlive the
   egress handle and Tokio runtime during shutdown.
 - Keep platform-specific code under `crates/provider-x-app/src/platform/macos` or behind an

@@ -19,6 +19,7 @@ cleanup() {
   local result=$?
   if (( result != 0 )); then
     cat "$LOG_FILE" >&2
+    cat "$SECOND_LOG" >&2
   fi
   if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
     kill "$APP_PID" 2>/dev/null || true
@@ -126,11 +127,34 @@ grep -q "PROVIDER_X_SMOKE lifecycle=window_reopened_before_release" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE settings_window=released" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE lifecycle=window_closed_process_alive" "$LOG_FILE"
 grep -q "PROVIDER_X_SMOKE lifecycle=window_reopened" "$LOG_FILE"
+grep -q "PROVIDER_X_SMOKE dock_visible=true settings_window=visible" "$LOG_FILE"
+grep -q "PROVIDER_X_SMOKE dock_visible=false settings_window=visible" "$LOG_FILE"
+
+# A saved Dock preference must survive launch, including AppKit's already-Regular policy.
+DOCK_PREFERENCE="$SMOKE_HOME/Library/Application Support/dev.qiankun.provider-x/ui-dock.json"
+(umask 077; print -n true > "$DOCK_PREFERENCE")
+PROVIDER_X_TEST_HOME="$SMOKE_HOME" "$APP_DIR/Contents/MacOS/provider-x" \
+  --smoke-lifecycle --smoke-exit-after-ms=7500 >"$SECOND_LOG" 2>&1 &
+APP_PID=$!
+wait "$APP_PID"
+APP_PID=""
+grep -q "PROVIDER_X_SMOKE tray=ready activation_policy=regular" "$SECOND_LOG"
+grep -q "PROVIDER_X_SMOKE lifecycle=window_closed_process_alive" "$SECOND_LOG"
+grep -q "PROVIDER_X_SMOKE lifecycle=window_reopened" "$SECOND_LOG"
+grep -q "PROVIDER_X_SMOKE lifecycle=quit" "$SECOND_LOG"
+grep -q "PROVIDER_X_SMOKE dock_visible=false settings_window=visible" "$SECOND_LOG"
+DOCK_EGRESS_ADDRESS=$(sed -n 's/^PROVIDER_X_SMOKE egress=ready address=\(127\.0\.0\.1:[0-9][0-9]*\)$/\1/p' "$SECOND_LOG" | tail -n 1)
+[[ -n "$DOCK_EGRESS_ADDRESS" ]]
+if curl --silent --max-time 1 --output /dev/null "http://$DOCK_EGRESS_ADDRESS/not-an-api-path"; then
+  print -u2 "Dock-enabled egress listener remains reachable after shutdown"
+  exit 1
+fi
 
 "$SCRIPT_DIR/verify-macos-app.sh" "$APP_DIR" >&2
 
 EXECUTABLE_BYTES=$(stat -f %z "$APP_DIR/Contents/MacOS/provider-x")
 print "shell smoke passed"
+print "dock_modes=accessory,regular"
 print "app=$APP_DIR"
 print "deferred_ui_rss_kb=$DEFERRED_RSS_KB"
 print "deferred_ui_footprint_mb=$DEFERRED_FOOTPRINT_MB"

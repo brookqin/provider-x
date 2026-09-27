@@ -163,6 +163,9 @@ export default class Settings extends View {
         .child(new Label(t("appearance")).build(cx))
         .child(new Tabs("appearance").items([{value:"dark",label:t("dark")},{value:"light",label:t("light")}]).value(this.data.theme || "dark")
           .onChange((value, context) => this.perform(`theme-${value}`, context)).build(cx))
+        .child(new Label(t("dock_icon")).build(cx))
+        .child(new Tabs("dock-visibility").items([{value:"show",label:t("show")},{value:"hide",label:t("hide")}]).value(this.data.dock_visible ? "show" : "hide")
+          .onChange((value, context) => this.perform(`dock-${value}`, context)).build(cx))
         .child(new Label(t("launch_at_login")).build(cx))
         .child(this.button("startup", t(this.data.startup === "Disabled" ? "enable" : "disable"), context => this.perform(this.data.startup === "Disabled" ? "startup-enable" : "startup-disable", context), cx));
     }

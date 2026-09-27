@@ -1,7 +1,7 @@
 use crate::codex_config::{CodexConfigStatus, ReceiptPhase};
 use crate::localization::{UiLocale, UiLocaleStore};
 use crate::platform::macos::{
-    is_accessory_activation_policy, set_accessory_activation_policy,
+    is_accessory_activation_policy, set_dock_visible,
     tray::{MacTrayController, TrayCommand},
 };
 use crate::runtime::AppServices;
@@ -132,21 +132,25 @@ pub fn run() -> anyhow::Result<()> {
     let startup_error = Rc::new(std::cell::RefCell::new(None));
     let reported_error = Rc::clone(&startup_error);
 
-    gpui_kit::application()
-        .with_assets(gpui_shell::AppAssets::new(ui_root()?))
-        .run(move |cx| {
-            if let Err(error) = launch(cx, options) {
-                // AppKit termination may exit without returning from Application::run.
-                // Report before quitting, including launches from Finder without a terminal.
-                // A native modal runs a nested event loop; release GPUI's App borrow first.
-                cx.spawn(async move |cx| {
-                    crate::platform::macos::show_startup_failure(&error);
-                    *reported_error.borrow_mut() = Some(error);
-                    cx.update(|cx| cx.quit());
-                })
-                .detach();
-            }
-        });
+    let application = gpui_kit::application().with_assets(gpui_shell::AppAssets::new(ui_root()?));
+    application.on_reopen(|cx| {
+        if cx.has_global::<SettingsRegistry>() && !cx.global::<SettingsRegistry>().quitting {
+            let _ = open_or_focus_settings(cx);
+        }
+    });
+    application.run(move |cx| {
+        if let Err(error) = launch(cx, options) {
+            // AppKit termination may exit without returning from Application::run.
+            // Report before quitting, including launches from Finder without a terminal.
+            // A native modal runs a nested event loop; release GPUI's App borrow first.
+            cx.spawn(async move |cx| {
+                crate::platform::macos::show_startup_failure(&error);
+                *reported_error.borrow_mut() = Some(error);
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        }
+    });
 
     if let Some(error) = startup_error.borrow_mut().take() {
         Err(error)
@@ -175,11 +179,7 @@ fn launch(cx: &mut App, options: LaunchOptions) -> anyhow::Result<()> {
     let listener_address = services.egress.address;
     let upgrade_notice = services.upgrade_notice.clone();
     cx.set_global(services);
-    set_accessory_activation_policy()?;
-    anyhow::ensure!(
-        is_accessory_activation_policy(),
-        "macOS activation policy did not remain Accessory"
-    );
+    let dock_visible = apply_saved_dock_preference()?;
 
     let tray = Rc::new(MacTrayController::new(listener_address, codex_enabled)?);
     cx.set_global(TrayControllerGlobal {
@@ -197,7 +197,10 @@ fn launch(cx: &mut App, options: LaunchOptions) -> anyhow::Result<()> {
         registry.cancel_release();
     })
     .detach();
-    println!("PROVIDER_X_SMOKE tray=ready activation_policy=accessory");
+    println!(
+        "PROVIDER_X_SMOKE tray=ready activation_policy={}",
+        if dock_visible { "regular" } else { "accessory" }
+    );
     println!("PROVIDER_X_SMOKE settings_ui=deferred");
 
     if options.show_settings && upgrade_notice.is_none() {
@@ -262,6 +265,20 @@ fn launch(cx: &mut App, options: LaunchOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn apply_saved_dock_preference() -> anyhow::Result<bool> {
+    let visible = crate::ui_preferences::load_dock_visible(
+        &AppPaths::for_home(crate::runtime::data_home()?)
+            .root
+            .join("ui-dock.json"),
+    )?;
+    set_dock_visible(visible)?;
+    anyhow::ensure!(
+        is_accessory_activation_policy() != visible,
+        "macOS activation policy did not match Dock preference"
+    );
+    Ok(visible)
+}
+
 fn show_provider_upgrade_notice(
     cx: &mut App,
     upgrade_notice: Option<crate::storage::provider_upgrade::UpgradeNotice>,
@@ -296,6 +313,7 @@ fn spawn_smoke_lifecycle(cx: &mut App) {
                 cx.quit();
             }
         });
+        smoke_dock_window_visibility(cx).await;
         cx.background_executor()
             .timer(Duration::from_millis(250))
             .await;
@@ -354,6 +372,26 @@ fn spawn_smoke_lifecycle(cx: &mut App) {
         });
     })
     .detach();
+}
+
+async fn smoke_dock_window_visibility(cx: &mut gpui_kit::AsyncApp) {
+    for visible in [true, false] {
+        let changed = cx.update(|_| {
+            crate::platform::macos::has_visible_window() && set_dock_visible(visible).is_ok()
+        });
+        // Observe after AppKit has processed the policy transition, without activating the app.
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+        cx.update(|cx| {
+            if !changed || !crate::platform::macos::has_visible_window() {
+                eprintln!("Dock visibility change hid the settings window");
+                cx.quit();
+            } else {
+                println!("PROVIDER_X_SMOKE dock_visible={visible} settings_window=visible");
+            }
+        });
+    }
 }
 
 fn manage_codex_integration_from_tray(cx: &mut App, tray: Rc<MacTrayController>) {

@@ -38,8 +38,10 @@ configured provider.
   stateful tool continuations.
 - Discover provider models explicitly, map dedicated implementations to their
   [models.dev](https://models.dev/) provider IDs, and enrich missing metadata with exact matches.
-- Manage provider settings, model visibility and capabilities, Codex integration, launch at login,
+- Manage provider settings, model visibility and capabilities, Codex integration, launch at login, Dock visibility,
   and English or Simplified Chinese UI from a native GPUI settings window.
+- Optionally show a Dock icon to reopen settings. Hiding the icon keeps the settings window open;
+  closing the window keeps the router running.
 - Respect `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` for upstream connections.
 - Record redacted request routing, upstream responses, and runtime errors in private daily local
   logs with 10-day retention.
