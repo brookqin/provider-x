@@ -32,7 +32,6 @@ const LISTENER_PORT_RANGE_WIDTH: u16 = 10;
 pub(crate) struct ManualRefreshOutcome {
     pub(crate) provider: ProviderConfig,
     pub(crate) preview: RefreshPreview,
-    pub(crate) registry_matched_models: usize,
     pub(crate) registry_warning: Option<String>,
 }
 
@@ -427,7 +426,6 @@ impl AppServices {
             return Ok(ManualRefreshOutcome {
                 provider,
                 preview,
-                registry_matched_models: 0,
                 registry_warning: None,
             });
         }
@@ -471,7 +469,6 @@ impl AppServices {
         Ok(ManualRefreshOutcome {
             provider,
             preview,
-            registry_matched_models: enrichment.matched_models.len(),
             registry_warning: (!warnings.is_empty()).then(|| warnings.join("；")),
         })
     }

@@ -773,10 +773,16 @@ async fn discover_action(
             action == "discover",
         )
         .await
-        .map_err(|_| rust_i18n::t!("settings.discovery_failed").to_string())?;
+        .map_err(|_| {
+            rust_i18n::t!(if action == "test" {
+                "settings.connection_test_failed"
+            } else {
+                "settings.discovery_failed"
+            })
+            .to_string()
+        })?;
     let preview = outcome.preview;
     let warning = outcome.registry_warning;
-    let matched = outcome.registry_matched_models;
     state.0.lock().map_err(|_| "state unavailable")?.credential = Some(outcome.provider.auth);
     if action == "discover" {
         let mut session = state.0.lock().map_err(|_| "state unavailable")?;
@@ -802,17 +808,10 @@ async fn discover_action(
                 session.draft.models.push(replacement);
             }
         }
+        return Ok(warning.unwrap_or_default());
     }
 
-    let mut message = rust_i18n::t!("settings.discovery_ok").to_string();
-    if matched > 0 {
-        message.push_str(rust_i18n::t!("settings.metadata_matched", count = matched).as_ref());
-    }
-    if let Some(warning) = warning {
-        message.push('\n');
-        message.push_str(&warning);
-    }
-    Ok(message)
+    Ok(rust_i18n::t!("settings.connection_test_ok").to_string())
 }
 
 fn compile_draft(state: &SettingsState, services: &AppServices) -> Result<ProviderConfig, String> {
