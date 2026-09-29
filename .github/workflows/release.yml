@@ -33,12 +33,12 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust 1.97.1
-        run: rustup toolchain install 1.97.1 --profile minimal --no-self-update
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
 
       - name: Build and verify app bundle
         env:
-          RUSTUP_TOOLCHAIN: 1.97.1
+          RUSTUP_TOOLCHAIN: 1.98.1
         run: ./scripts/build-macos-app.sh
 
       - name: Install create-dmg

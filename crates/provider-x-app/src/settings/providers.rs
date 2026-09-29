@@ -102,14 +102,7 @@ impl Settings {
             cx.listener(|this, _: &bool, window, cx| this.cancel_provider_removal(window, cx));
         ui::alert_dialog(&self.provider_removal_focus, cx)
             .on_ok(|_, _, _| false)
-            .popup(
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(div().id("provider-removal-surface").occlude().child(popup)),
-            )
+            .popup(div().id("provider-removal-surface").occlude().child(popup))
             .request_close(move |confirmed, window, cx| cancel(&confirmed, window, cx))
     }
 

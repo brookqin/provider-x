@@ -72,7 +72,7 @@ enum PreparedUpstream {
         url: String,
         headers: HeaderMap,
         message: Message,
-        connector: NetworkConnector,
+        connector: Box<NetworkConnector>,
     },
     HttpBridge {
         provider: Box<crate::state::ProviderEgress>,
@@ -407,7 +407,7 @@ async fn run_session(
         };
         diagnostics.mode = Some(ObservedWebSocketMode::DirectWebSocket);
         let (mut upstream, upstream_status) =
-            connect_direct_upstream(&url, &headers, connector, &state, shutdown.clone()).await?;
+            connect_direct_upstream(&url, &headers, *connector, &state, shutdown.clone()).await?;
         state.observe(EgressEvent::UpstreamObserved(UpstreamObserved {
             transport: ObservedTransport::WebSocket,
             session_id: Some(session_id),
@@ -634,7 +634,7 @@ fn prepare_first_message(
                     .ok_or(WebSocketProxyError::ProviderNotAvailable)?,
                 headers: official_websocket_headers(request_headers),
                 message: Message::Text(text),
-                connector: state.official_websocket_connector.clone(),
+                connector: Box::new(state.official_websocket_connector.clone()),
             },
         }),
         RouteDecision::UnavailableManagedModel => Err(WebSocketProxyError::ModelNotAvailable),
@@ -681,7 +681,7 @@ fn prepare_first_message(
                             )
                             .map_err(|_| WebSocketProxyError::ProviderNotAvailable)?,
                             message: Message::text(rewritten),
-                            connector: provider.websocket_connector.clone(),
+                            connector: Box::new(provider.websocket_connector.clone()),
                         },
                     })
                 }

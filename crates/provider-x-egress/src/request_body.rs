@@ -68,6 +68,49 @@ mod tests {
     use super::RequestEncoding;
     use crate::ProxyError;
 
+    // Generated independently with the Zstandard 1.5.7 CLI, without a checksum.
+    const ZSTD_FRAME: &[u8] =
+        b"\x28\xb5\x2f\xfd\x00\x58\x21\x01\x00{\"model\":\"gpt-test\",\"input\":\"hello\"}";
+    const ZSTD_BODY: &[u8] = br#"{"model":"gpt-test","input":"hello"}"#;
+
+    #[tokio::test]
+    async fn zstd_decodes_an_independent_frame_and_bounds_concatenated_frames() {
+        assert_eq!(
+            RequestEncoding::Zstd
+                .decode(Bytes::from_static(ZSTD_FRAME), ZSTD_BODY.len())
+                .await
+                .unwrap(),
+            ZSTD_BODY
+        );
+        let frames = Bytes::from([ZSTD_FRAME, ZSTD_FRAME].concat());
+        assert_eq!(
+            RequestEncoding::Zstd
+                .decode(frames.clone(), ZSTD_BODY.len() * 2)
+                .await
+                .unwrap(),
+            [ZSTD_BODY, ZSTD_BODY].concat()
+        );
+        assert!(matches!(
+            RequestEncoding::Zstd.decode(frames, ZSTD_BODY.len()).await,
+            Err(ProxyError::BodyTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn zstd_rejects_truncated_frames_and_invalid_trailing_data() {
+        for invalid in [
+            ZSTD_FRAME[..ZSTD_FRAME.len() - 1].to_vec(),
+            [ZSTD_FRAME, b"invalid"].concat(),
+        ] {
+            assert!(matches!(
+                RequestEncoding::Zstd
+                    .decode(Bytes::from(invalid), ZSTD_BODY.len() + 1)
+                    .await,
+                Err(ProxyError::InvalidRequest(_))
+            ));
+        }
+    }
+
     #[tokio::test]
     async fn zstd_decode_is_bounded() {
         let original = Bytes::from_static(br#"{"model":"gpt-5.6","input":"hello"}"#);

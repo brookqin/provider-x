@@ -496,7 +496,7 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
 
     ensure_settings_ui_initialized(cx)?;
     let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
-    cx.open_window(
+    let (_, settings) = gpui_kit::open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(900.0), px(640.0))),
@@ -507,6 +507,7 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
             }),
             ..WindowOptions::default()
         },
+        cx,
         move |window, cx| {
             let window_handle = window.window_handle();
             window.on_window_should_close(cx, move |_, cx| {
@@ -516,12 +517,12 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
                 schedule_settings_window_release(window_handle, cx);
                 false
             });
-            let root = cx.new(|cx| crate::settings::Settings::new(window, cx));
+            let settings = cx.new(|cx| crate::settings::Settings::new(window, cx));
             println!("PROVIDER_X_SMOKE settings_view=ready");
-            cx.global_mut::<SettingsRegistry>().view = Some(root.downgrade());
-            root
+            settings
         },
     )?;
+    cx.global_mut::<SettingsRegistry>().view = Some(settings.downgrade());
     cx.activate(true);
     println!("PROVIDER_X_SMOKE settings_window=open");
     Ok(())
@@ -529,6 +530,7 @@ fn open_or_focus_settings(cx: &mut App) -> anyhow::Result<()> {
 
 fn ensure_settings_ui_initialized(cx: &mut App) -> anyhow::Result<()> {
     if !cx.global::<SettingsRegistry>().components_initialized {
+        // Omarchy initializes Base, including the Root used by Kit's window entry point.
         gpui_omarchy::init(cx);
         gpui_omarchy::Theme::tokyo_night().apply(cx);
         crate::settings_state::register(cx)?;

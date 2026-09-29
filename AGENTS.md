@@ -10,7 +10,7 @@ Codex and ChatGPT Desktop. It keeps official OpenAI traffic transparent while ro
 third-party models to configured providers. It supports OpenAI Responses, including WebSocket to
 HTTP/SSE bridging, and OpenAI Chat Completions through protocol adapters.
 
-The workspace uses Rust 2024, requires Rust 1.97.1 or newer, and forbids unsafe Rust. The primary
+The workspace uses Rust 2024, requires Rust 1.98.1 or newer, and forbids unsafe Rust. The primary
 shipping target is Apple Silicon macOS. Keep `Cargo.lock` committed and update it intentionally
 when dependencies change.
 

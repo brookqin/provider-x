@@ -19,7 +19,7 @@ use url::Url;
 const ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CALLBACK_PORTS: [u16; 2] = [1455, 1457];
-const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_BODY_LIMIT: usize = 256 * 1024;
 const TOKEN_REFRESH_WINDOW_SECS: u64 = 5 * 60;
@@ -552,6 +552,35 @@ mod tests {
             "e30.{}.signature",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
         )
+    }
+
+    #[test]
+    fn jwt_payload_accepts_fixed_base64url_and_rejects_invalid_encoding() {
+        assert_eq!(
+            parse_expiration("e30.eyJleHAiOjE5MDAwMDAwMDB9.signature").unwrap(),
+            1_900_000_000
+        );
+        for payload in ["eyJleHAiOjE5MDAwMDAwMDB9=", "!!!!", "a"] {
+            assert!(matches!(
+                decode_jwt_payload(&format!("e30.{payload}.signature")),
+                Err(OpenAiOAuthError::InvalidResponse)
+            ));
+        }
+    }
+
+    #[test]
+    fn pkce_verifier_retains_entropy_and_urlsafe_encoding() {
+        let pkce = Pkce::generate().unwrap();
+        assert_eq!(pkce.verifier.len(), 86);
+        assert_eq!(pkce.challenge.len(), 43);
+        assert_eq!(URL_SAFE_NO_PAD.decode(&pkce.verifier).unwrap().len(), 64);
+        for encoded in [&pkce.verifier, &pkce.challenge] {
+            assert!(
+                encoded
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            );
+        }
     }
 
     #[test]

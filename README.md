@@ -111,7 +111,7 @@ communication. This limitation does not affect selecting a third-party model for
 ## Requirements
 
 - Apple Silicon Mac (`arm64`)
-- Rust 1.97.1 or newer with Cargo
+- Rust 1.98.1 or newer with Cargo
 - Xcode Command Line Tools, including `codesign`, `iconutil`, `lipo`, and `plutil`
 - Credentials for each third-party provider you choose to configure
 
